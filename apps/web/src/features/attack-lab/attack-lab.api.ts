@@ -1,3 +1,5 @@
+import { apiPath } from "../../shared/api/client";
+
 export type AttackLabScenarioId =
   | "refund_policy"
   | "argument_tampering"
@@ -47,7 +49,7 @@ export async function runAttackLab(
   scenarioId: AttackLabScenarioId,
   values: { amount?: number; changedAmount?: number } = {},
 ): Promise<AttackLabResult> {
-  const response = await fetch("/api/attack-lab/run", {
+  const response = await fetch(apiPath("/attack-lab/run"), {
     method: "POST",
     credentials: "omit",
     cache: "no-store",
