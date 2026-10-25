@@ -6,8 +6,14 @@ import react from "@vitejs/plugin-react";
 const root = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
+  // Render serves the Vite build from the domain root. Keep every generated
+  // asset URL absolute so /app.html and /attack-lab.html resolve /assets/*
+  // instead of looking relative to the current HTML path.
+  base: "/",
   plugins: [react()],
   build: {
+    outDir: "dist",
+    emptyOutDir: true,
     rollupOptions: {
       input: {
         main: resolve(root, "index.html"),

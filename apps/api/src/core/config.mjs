@@ -91,7 +91,9 @@ const requiredSecret = (name, fallback) => {
 export const config = Object.freeze({
   nodeEnv: process.env.NODE_ENV ?? "development",
   host: process.env.API_HOST ?? (isProduction ? "0.0.0.0" : "127.0.0.1"),
-  port: positiveInteger("API_PORT", 4100, { max: 65535 }),
+  // Render injects PORT at runtime; keep API_PORT as the explicit local and
+  // Docker override so existing development/Compose environments are stable.
+  port: positiveInteger("API_PORT", positiveInteger("PORT", 4100, { max: 65535 }), { max: 65535 }),
   trustProxy: parseTrustProxy(),
   webOrigin: configuredOrigin(),
   databaseUrl:
