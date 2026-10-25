@@ -1984,9 +1984,26 @@ button:disabled {
 .policy-form input:-webkit-autofill,
 .connect-form input:-webkit-autofill,
 .agent-editor input:-webkit-autofill,
-.auth-card input:-webkit-autofill {
-  -webkit-text-fill-color: #e8f3f7;
-  box-shadow: 0 0 0 1000px #0a1727 inset;
+.auth-card input:-webkit-autofill,
+.settings-field input:-webkit-autofill,
+.incident-add-webhook input:-webkit-autofill,
+.contract-fields input:-webkit-autofill,
+.contract-notes textarea:-webkit-autofill,
+.scenario-search input:-webkit-autofill,
+.billing-exception__actions input:-webkit-autofill {
+  -webkit-text-fill-color: #e8f3f7 !important;
+  -webkit-box-shadow: 0 0 0 1000px #0a1727 inset !important;
+  box-shadow: 0 0 0 1000px #0a1727 inset !important;
+  caret-color: #e8f3f7;
+  color-scheme: dark;
+}
+
+/* Keep browser-managed form rendering from turning light text invisible on
+   autofilled or otherwise user-agent-styled controls. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+textarea,
+select {
+  color-scheme: dark;
 }
 .policy-form input[type="number"] { font-family: "DM Mono", monospace; color: #80e4d4; }
 .policy-form input[maxlength] { text-transform: uppercase; letter-spacing: .08em; }

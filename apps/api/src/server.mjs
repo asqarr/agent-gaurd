@@ -86,6 +86,22 @@ app.use("/assets", express.static(path.join(publicPath, "assets")));
 
 app.disable("x-powered-by");
 app.set("trust proxy", config.trustProxy);
+
+function isSameOriginRequest(req, origin) {
+  if (!origin) return true;
+  const host = req.get("host");
+  if (!host) return false;
+  try {
+    const parsedOrigin = new URL(origin);
+    if (parsedOrigin.host !== host) return false;
+    return config.isProduction
+      ? parsedOrigin.protocol === "https:"
+      : parsedOrigin.protocol === req.protocol;
+  } catch {
+    return false;
+  }
+}
+
 app.use((req, res, next) => {
   const supplied = req.get("X-Request-Id");
   req.requestId = supplied && /^[a-zA-Z0-9._:-]{1,128}$/.test(supplied)
@@ -116,7 +132,7 @@ app.use((req, res, next) => {
   if (req.path.startsWith("/api/")) res.setHeader("Cache-Control", "no-store");
   res.setHeader("Vary", "Origin");
   const origin = req.get("Origin");
-  let isAllowedOrigin = !origin || origin === config.webOrigin;
+  let isAllowedOrigin = !origin || origin === config.webOrigin || isSameOriginRequest(req, origin);
   if (origin && !isAllowedOrigin && !config.isProduction) {
     try {
       const parsedOrigin = new URL(origin);

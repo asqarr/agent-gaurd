@@ -1,14 +1,15 @@
 import { growthSessionHeader } from "../../features/analytics/growth";
 
-// The dashboard and API are served from the same Render origin. Keeping this
-// relative prevents production builds from depending on localhost, a fixed
-// port, or a separate API hostname.
-export const API_BASE_URL = "/api";
+// The dashboard and API are served from the same Render origin. An empty base
+// URL makes the browser resolve every request against the current site rather
+// than a localhost, fixed-port, or separate API hostname.
+export const API_BASE_URL = "";
+const API_PREFIX = "/api";
 
 export function apiPath(path: string) {
   const normalized = path.startsWith("/") ? path : `/${path}`;
-  if (normalized === API_BASE_URL || normalized.startsWith(`${API_BASE_URL}/`)) return normalized;
-  return `${API_BASE_URL}${normalized}`;
+  if (normalized === API_PREFIX || normalized.startsWith(`${API_PREFIX}/`)) return normalized;
+  return `${API_PREFIX}${normalized}`;
 }
 
 export async function request(path: string, init?: RequestInit) {
