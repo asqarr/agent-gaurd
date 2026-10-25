@@ -1,0 +1,24 @@
+{
+  "name": "agentguard-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.mjs",
+    "start": "node src/server.mjs",
+    "test": "node --test test/scan-engine.test.mjs test/auth-secrets.test.mjs test/agent-endpoint-consumers.test.mjs test/network-guard-production.test.mjs test/config.test.mjs test/network-guard.test.mjs test/runtime-firewall.test.mjs test/runtime-health.test.mjs test/enforcement-verification.test.mjs test/billing.test.mjs test/contracts.test.mjs test/autopilot.test.mjs test/sentinel.test.mjs test/incidents.test.mjs test/rate-limit.test.mjs test/report.test.mjs test/quickstart.test.mjs test/attack-lab.test.mjs test/growth-analytics.test.mjs",
+    "test:integration": "node --test test/api.integration.test.mjs",
+    "test:runtime-gateway": "node --test test/runtime-gateway.integration.test.mjs",
+    "test:auth-hardening": "node --test test/auth-hardening.integration.test.mjs",
+    "test:security-boundaries": "node --test test/security-boundaries.integration.test.mjs",
+    "test:billing-business": "node --test test/billing-business.integration.test.mjs",
+    "test:agent-client": "node scripts/test-agent-client.mjs"
+  },
+  "dependencies": {
+    "@agentguard/sdk": "*",
+    "bcryptjs": "^3.0.2",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.16.3"
+  }
+}

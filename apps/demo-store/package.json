@@ -1,0 +1,14 @@
+{
+  "name": "@agentguard/demo-store",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/demo-store.integration.test.mjs"
+  },
+  "dependencies": {
+    "@agentguard/sdk": "*",
+    "pg": "^8.16.3"
+  }
+}

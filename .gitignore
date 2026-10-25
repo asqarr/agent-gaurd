@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+!.env.production.example
+node_modules/
+apps/web/dist/
+apps/api/.data/
+backups/
+*-backup-identity.txt

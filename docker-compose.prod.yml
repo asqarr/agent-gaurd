@@ -1,0 +1,154 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - agentguard-postgres-prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: 4100
+      TRUST_PROXY: "2"
+      WEB_ORIGIN: ${WEB_ORIGIN:?WEB_ORIGIN is required}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      AGENT_SECRET: ${AGENT_SECRET:?AGENT_SECRET is required}
+      AUTH_COOKIE: ${AUTH_COOKIE:-__Host-agentguard_session}
+      AGENT_REQUEST_TIMEOUT_MS: ${AGENT_REQUEST_TIMEOUT_MS:-30000}
+      AGENT_MAX_RESPONSE_BYTES: ${AGENT_MAX_RESPONSE_BYTES:-1048576}
+      SCAN_WORKER_INTERVAL_MS: ${SCAN_WORKER_INTERVAL_MS:-1000}
+      SCAN_MAX_ATTEMPTS: ${SCAN_MAX_ATTEMPTS:-3}
+      SCAN_JOB_LEASE_MS: ${SCAN_JOB_LEASE_MS:-300000}
+      SCAN_RETRY_BASE_MS: ${SCAN_RETRY_BASE_MS:-2000}
+      RETENTION_WORKER_INTERVAL_MS: ${RETENTION_WORKER_INTERVAL_MS:-3600000}
+      BILLING_RECONCILIATION_INTERVAL_MS: ${BILLING_RECONCILIATION_INTERVAL_MS:-30000}
+      BILLING_RECONCILIATION_BATCH_SIZE: ${BILLING_RECONCILIATION_BATCH_SIZE:-20}
+      SENTINEL_WORKER_INTERVAL_MS: ${SENTINEL_WORKER_INTERVAL_MS:-60000}
+      INCIDENT_WORKER_INTERVAL_MS: ${INCIDENT_WORKER_INTERVAL_MS:-2000}
+      AUTH_RATE_LIMIT_WINDOW_MS: ${AUTH_RATE_LIMIT_WINDOW_MS:-600000}
+      AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-30}
+      RUNTIME_RATE_LIMIT_WINDOW_MS: ${RUNTIME_RATE_LIMIT_WINDOW_MS:-60000}
+      RUNTIME_RATE_LIMIT_MAX: ${RUNTIME_RATE_LIMIT_MAX:-120}
+      RUNTIME_APPROVAL_TTL_MS: ${RUNTIME_APPROVAL_TTL_MS:-30000}
+      RUNTIME_CONTEXT_CLOCK_SKEW_MS: ${RUNTIME_CONTEXT_CLOCK_SKEW_MS:-300000}
+      REQUIRE_EMAIL_VERIFICATION: ${REQUIRE_EMAIL_VERIFICATION:-true}
+      AUTH_EMAIL_WEBHOOK_URL: ${AUTH_EMAIL_WEBHOOK_URL:-}
+      SCAN_RATE_LIMIT_WINDOW_MS: ${SCAN_RATE_LIMIT_WINDOW_MS:-60000}
+      SCAN_RATE_LIMIT_MAX: ${SCAN_RATE_LIMIT_MAX:-10}
+      WEBHOOK_RATE_LIMIT_WINDOW_MS: ${WEBHOOK_RATE_LIMIT_WINDOW_MS:-60000}
+      WEBHOOK_RATE_LIMIT_MAX: ${WEBHOOK_RATE_LIMIT_MAX:-10}
+      MY_TRONLINK_PUBLIC_ADDRESS: ${MY_TRONLINK_PUBLIC_ADDRESS:?MY_TRONLINK_PUBLIC_ADDRESS is required}
+      TRON_USDT_CONTRACT: ${TRON_USDT_CONTRACT:-TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t}
+      TRON_GRID_URL: ${TRON_GRID_URL:-https://api.trongrid.io}
+      TRONSCAN_API_URL: ${TRONSCAN_API_URL:-https://apilist.tronscanapi.com}
+      TRON_PRO_API_KEY: ${TRON_PRO_API_KEY:-}
+      TRON_MAX_LOOKBACK_MS: ${TRON_MAX_LOOKBACK_MS:-2592000000}
+      TRON_REQUEST_TIMEOUT_MS: ${TRON_REQUEST_TIMEOUT_MS:-10000}
+      ALLOW_PRIVATE_AGENT_ENDPOINTS: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    init: true
+    stop_grace_period: 30s
+    expose:
+      - "4100"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/api/health').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_SITE_URL: ${VITE_SITE_URL:?VITE_SITE_URL is required}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  caddy:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN is required}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - agentguard-caddy-data:/data
+      - agentguard-caddy-config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+      backup:
+        condition: service_healthy
+
+  backup:
+    build:
+      context: .
+      dockerfile: apps/backup/Dockerfile
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB is required}
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:?BACKUP_AGE_RECIPIENT is required}
+      BACKUP_DIRECTORY: /backups
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_RETRY_SECONDS: ${BACKUP_RETRY_SECONDS:-300}
+      BACKUP_HEALTH_WINDOW_MINUTES: ${BACKUP_HEALTH_WINDOW_MINUTES:-1560}
+    volumes:
+      - ${BACKUP_PATH:-./backups}:/backups
+      - ./scripts/postgres-backup-loop.sh:/usr/local/bin/agentguard-backup.sh:ro
+    entrypoint: ["/bin/bash", "/usr/local/bin/agentguard-backup.sh"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 256m
+    cpus: 0.50
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/agentguard-backup-success && find /tmp/agentguard-backup-success -mmin -$${BACKUP_HEALTH_WINDOW_MINUTES} | grep -q ."]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 20m
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  agentguard-postgres-prod:
+  agentguard-caddy-data:
+  agentguard-caddy-config:
+

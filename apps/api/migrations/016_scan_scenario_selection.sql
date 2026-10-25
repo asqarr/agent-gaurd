@@ -1,0 +1,2 @@
+ALTER TABLE scans
+  ADD COLUMN IF NOT EXISTS scenario_ids JSONB NOT NULL DEFAULT '[]'::jsonb;

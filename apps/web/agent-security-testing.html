@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#080c18" />
+    <link rel="stylesheet" href="/marketing.css" />
+    <link rel="stylesheet" href="/growth-analytics.css" />
+    <meta
+      name="description"
+      content="A practical guide to AI agent security testing: prompt injection, tool-call abuse, data exfiltration, policy bypasses, and runtime enforcement."
+    />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <link rel="canonical" href="__SITE_URL__/agent-security-testing.html" />
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="AgentGuard" />
+    <meta
+      property="og:title"
+      content="AI Agent Security Testing: A Practical Guide | AgentGuard"
+    />
+    <meta
+      property="og:description"
+      content="How to test AI agents against real attack paths before production traffic reaches them."
+    />
+    <meta
+      property="og:url"
+      content="__SITE_URL__/agent-security-testing.html"
+    />
+    <title>AI Agent Security Testing: A Practical Guide | AgentGuard</title>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": "AI Agent Security Testing: A Practical Guide",
+        "description": "How to test AI agents against prompt injection, tool abuse, data exfiltration, and policy bypasses.",
+        "author": { "@type": "Organization", "name": "AgentGuard" },
+        "publisher": { "@type": "Organization", "name": "AgentGuard" },
+        "mainEntityOfPage": "__SITE_URL__/agent-security-testing.html"
+      }
+    </script>
+  </head>
+  <body>
+    <header class="mk-header">
+      <a class="mk-brand" href="/"
+        ><span class="mk-brand-mark"><i></i><i></i><i></i></span>AGENT<span
+          >GUARD</span
+        ><small>OS</small></a
+      >
+      <nav>
+        <a href="/#how-it-works">How it works</a
+        ><a href="/#coverage">Coverage</a><a href="/app.html">Open dashboard</a>
+      </nav>
+      <a class="mk-button mk-button--ghost" href="/app.html"
+        >Start testing <b>↗</b></a
+      >
+    </header>
+    <main class="mk-article">
+      <div class="mk-article__intro">
+        <span class="mk-kicker"><i></i> SECURITY ENGINEERING GUIDE</span>
+        <h1>
+          AI agent security testing that checks
+          <em>behavior, not just prompts.</em>
+        </h1>
+        <p>
+          AI agents are software systems with permissions, tools, data
+          boundaries, and side effects. A serious security test must evaluate
+          the complete path from untrusted input to proposed action.
+        </p>
+        <div class="mk-article__meta">
+          Updated October 2026 <span>·</span> 8 min read
+        </div>
+      </div>
+      <div class="mk-article__layout">
+        <article class="mk-prose">
+          <p class="mk-prose__lead">
+            An agent can produce a polite answer and still be unsafe. The
+            security boundary is crossed when it proposes a refund, changes an
+            order, creates a ticket, reads another tenant’s data, or moves
+            sensitive context into a side effect.
+          </p>
+          <h2>What should an agent security test cover?</h2>
+          <p>
+            A useful suite tests the agent’s decisions under pressure, not only
+            whether it follows a happy-path instruction. Start with five layers:
+          </p>
+          <ol>
+            <li>
+              <strong>Instruction hierarchy.</strong> Place malicious
+              instructions in retrieved content and verify that data remains
+              data—not authority.
+            </li>
+            <li>
+              <strong>Authorization boundaries.</strong> Test role
+              impersonation, cross-tenant object access, and requests that rely
+              on conversational claims instead of server-side permissions.
+            </li>
+            <li>
+              <strong>Tool-call integrity.</strong> Bind arguments to trusted
+              context, reject malformed structures, and block tools that are not
+              explicitly registered.
+            </li>
+            <li>
+              <strong>Side-effect safety.</strong> Evaluate read-then-write
+              chains, data exfiltration through tickets, and business-policy
+              boundaries.
+            </li>
+            <li>
+              <strong>Runtime enforcement.</strong> Put a fail-closed guard in
+              front of execution so a new prompt or model regression cannot
+              directly reach a side effect.
+            </li>
+          </ol>
+          <h2>Why single-turn jailbreak tests are not enough</h2>
+          <p>
+            Real failures are often composed: a lookup creates context, an
+            attacker changes the meaning of that context, and a second tool
+            performs the side effect. That is why AgentGuard records the input,
+            every proposed tool call, the policy decision, and whether execution
+            was allowed or suppressed.
+          </p>
+          <div class="mk-callout">
+            <strong>The useful result is not “the model refused.”</strong
+            ><span
+              >The useful result is evidence that the system cannot cross an
+              authorization boundary—even when the model proposes the
+              action.</span
+            >
+          </div>
+          <h2>A production-ready workflow</h2>
+          <p>
+            Connect a safe endpoint, run a professional adversarial suite,
+            review the Security Blueprint, and apply only the controls you
+            approve. Keep the business policy explicit, keep unknown tools
+            blocked, and rerun the suite whenever prompts, tools, models, or
+            permissions change.
+          </p>
+          <h2>Agent security testing checklist</h2>
+          <ul class="mk-checklist">
+            <li>Every tool has an explicit allowlist entry.</li>
+            <li>Retrieved content cannot override trusted server data.</li>
+            <li>
+              Object-level authorization is checked before tool execution.
+            </li>
+            <li>Malformed and conflicting arguments fail closed.</li>
+            <li>Side effects require a fresh policy decision.</li>
+            <li>Runtime decisions produce auditable evidence.</li>
+          </ul>
+          <a class="mk-button mk-button--primary" href="/app.html"
+            >Run your first assessment <b>→</b></a
+          >
+        </article>
+        <aside class="mk-article__aside">
+          <div class="mk-aside-card">
+            <span class="mk-kicker">AGENTGUARD METHOD</span
+            ><strong>Challenge → Evidence → Blueprint → Protect</strong>
+            <p>Turn agent testing into a repeatable security control.</p>
+            <a href="/app.html">Open the dashboard →</a>
+          </div>
+          <div class="mk-aside-card mk-aside-card--muted">
+            <span class="mk-kicker">RELATED GUIDE</span
+            ><strong>Prompt injection testing</strong>
+            <p>
+              Learn how hidden instructions in retrieved content manipulate
+              agent behavior.
+            </p>
+            <a href="/prompt-injection-testing.html">Read the guide →</a>
+          </div>
+        </aside>
+      </div>
+    </main>
+    <footer class="mk-footer">
+      <a class="mk-brand" href="/"
+        ><span class="mk-brand-mark"><i></i><i></i><i></i></span>AGENT<span
+          >GUARD</span
+        ><small>OS</small></a
+      ><span
+        >AI agent security testing, red teaming, and runtime protection.</span
+      ><span>© 2026 AgentGuard</span>
+      <span class="mk-privacy-status">Anonymous first-party session metrics only; no third-party analytics.</span>
+      <button class="mk-privacy-toggle" type="button" data-growth-analytics-toggle aria-pressed="true">Disable anonymous analytics</button>
+      <span class="mk-privacy-status" data-growth-analytics-status aria-live="polite"></span>
+    </footer>
+    <script type="module" src="/src/features/analytics/marketing.ts"></script>
+  </body>
+</html>

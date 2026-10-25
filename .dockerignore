@@ -1,0 +1,11 @@
+node_modules
+apps/web/dist
+apps/api/.data
+backups
+*-backup-identity.txt
+.env
+.env.*
+!.env.production.example
+.git
+npm-debug.log*
+

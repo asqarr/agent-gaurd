@@ -1,0 +1,24 @@
+.mk-footer { flex-wrap: wrap; padding: 16px 0; }
+.mk-privacy-toggle,
+.attack-lab__privacy-toggle {
+  padding: 7px 9px;
+  border: 1px solid #294657;
+  border-radius: 5px;
+  color: #8eabb8;
+  background: rgba(12, 27, 40, .8);
+  font: 7px "DM Mono", monospace;
+  cursor: pointer;
+}
+.mk-privacy-toggle:hover,
+.attack-lab__privacy-toggle:hover {
+  border-color: #4d9b94;
+  color: #a9eee2;
+}
+.mk-privacy-status,
+.attack-lab__footer [data-growth-analytics-status] {
+  color: #6cae9e;
+  font: 7px "DM Mono", monospace;
+}
+@media (max-width: 560px) {
+  .mk-footer { align-items: flex-start; }
+}
