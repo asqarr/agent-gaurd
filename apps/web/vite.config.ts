@@ -21,6 +21,8 @@ export default defineConfig({
         attackLab: resolve(root, "attack-lab.html"),
         agentSecurityTesting: resolve(root, "agent-security-testing.html"),
         promptInjectionTesting: resolve(root, "prompt-injection-testing.html"),
+        privacy: resolve(root, "privacy.html"),
+        terms: resolve(root, "terms.html"),
       },
     },
   },

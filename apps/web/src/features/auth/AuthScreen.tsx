@@ -15,7 +15,7 @@ export function AuthScreen({
   const [name, setName] = useState("");
   const [email, setEmail] = useState(isDevelopment ? "demo@agentguard.local" : "");
   const [password, setPassword] = useState(isDevelopment ? "change-me-locally" : "");
-  const [workspaceName, setWorkspaceName] = useState("Northstar Labs");
+  const [workspaceName, setWorkspaceName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");

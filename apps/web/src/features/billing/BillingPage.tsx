@@ -369,6 +369,10 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
 
   async function startPlanChange(plan: BillingPlan) {
     if (!billing) return;
+    if (!["owner", "admin"].includes(authUser?.role ?? "")) {
+      setCheckoutError("Only workspace owners and admins can change the plan.");
+      return;
+    }
     setBusyKey(`plan:${plan.id}`);
     setCheckoutError("");
     setCheckoutMessage("");
@@ -391,6 +395,10 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
   }
 
   async function buyAddon(addon: BillingAddon) {
+    if (!["owner", "admin"].includes(authUser?.role ?? "")) {
+      setCheckoutError("Only workspace owners and admins can purchase add-ons.");
+      return;
+    }
     if (addon.kind === "security_audit" && !auditAgentId) {
       setCheckoutError("Select an Agent before purchasing the Security Audit.");
       return;
@@ -419,6 +427,10 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
     const checkout = directCheckout;
     const currentOrderId = orderId ?? checkout?.order_id;
     if (!checkout || !currentOrderId) return;
+    if (!["owner", "admin"].includes(authUser?.role ?? "")) {
+      setCheckoutError("Only workspace owners and admins can verify billing payments.");
+      return;
+    }
     setVerificationBusy(true);
     setCheckoutError("");
     let retrying = false;
@@ -462,6 +474,10 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
   }
 
   async function cancelDowngrade() {
+    if (!["owner", "admin"].includes(authUser?.role ?? "")) {
+      setCheckoutError("Only workspace owners and admins can manage billing.");
+      return;
+    }
     setBusyKey("cancel-downgrade");
     try {
       setBilling(await cancelScheduledPlanChange());
@@ -518,6 +534,7 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
     <section className="workspace-view billing-page">
       {checkoutError && !directCheckout ? <div className="billing-error" role="alert"><Icon name="activity" size={16} /><span>{checkoutError}</span><button className="button button--subtle" onClick={() => setCheckoutError("")}>Dismiss</button></div> : null}
       {checkoutMessage && !directCheckout ? <div className="billing-success" role="status"><Icon name="shield" size={16} /><span>{checkoutMessage}</span><button className="button button--subtle" onClick={() => setCheckoutMessage("")}>Dismiss</button></div> : null}
+      {billing.subscription.lastExpiryFallback ? <div className="billing-plan-fallback" role="status"><Icon name="clock" size={17} /><div><strong>{billing.subscription.lastExpiryFallback.fromPlanName} period ended — Explorer access is active.</strong><span>Your workspace data is safe, but paid controls are paused. Renew or upgrade to restore the full security suite.</span></div><a className="button button--primary" href="#billing-plans">Renew or upgrade <Icon name="arrow" size={14} /></a></div> : null}
       {directCheckout ? <section ref={checkoutPanelRef} className="billing-direct-checkout panel">
         <div className="billing-direct-checkout__heading"><div><span className="eyebrow eyebrow--cyan">DIRECT P2P SETTLEMENT</span><h3>Pay from any wallet on TRC20.</h3><p>Send the exact USDT amount directly to the AgentGuard wallet. No hosted invoice or wallet extension is required.</p></div><Icon name="wallet" size={20} /></div>
         <div className="billing-direct-checkout__grid">
@@ -537,7 +554,8 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
               <button
                 type="button"
                 className="button button--primary"
-                disabled={verificationBusy || directCheckout.checkout.status === "completed"}
+                disabled={!canManageBilling || verificationBusy || directCheckout.checkout.status === "completed"}
+                title={canManageBilling ? undefined : "Only workspace owners and admins can verify payments."}
                 onClick={() => void verifyDirectPayment({ autoRetry: true })}
               >
                 {verificationBusy ? "Checking blockchain…" : directCheckout.checkout.status === "completed" ? "Payment verified" : "I already paid"}
@@ -570,7 +588,7 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
         <div className="billing-payment-history__list">{paymentHistory.slice(0, 8).map((payment) => <article className="billing-payment-history__row" key={payment.id}><div><strong>{payment.planName ?? payment.addonName ?? "AgentGuard purchase"}</strong><small>{formatDate(payment.paidAt ?? payment.createdAt)} · {payment.network ?? payment.currency}</small></div><span>{payment.amount} {payment.currency}</span><b className={`billing-payment-history__status billing-payment-history__status--${payment.status}`}>{paymentStatusLabel(payment.status)}</b>{payment.txHash ? <button type="button" className="text-button" onClick={() => void copyPaymentValue(payment.txHash ?? "", "Transaction hash")}>{shortPaymentValue(payment.txHash)}</button> : null}</article>)}</div>
       </section> : null}
 
-      {hasPendingDowngrade ? <div className="billing-pending-change panel"><div><span className="eyebrow">SCHEDULED CHANGE</span><strong>Downgrade to {pendingPlanName}</strong><small>Effective {formatDate(billing.subscription.pendingPlanEffectiveAt)}. Current access remains unchanged until then.</small></div><button className="button button--subtle" disabled={busyKey !== null} onClick={() => void cancelDowngrade()}>{busyKey === "cancel-downgrade" ? "Cancelling…" : "Keep current plan"}</button></div> : null}
+      {hasPendingDowngrade ? <div className="billing-pending-change panel"><div><span className="eyebrow">SCHEDULED CHANGE</span><strong>Downgrade to {pendingPlanName}</strong><small>Effective {formatDate(billing.subscription.pendingPlanEffectiveAt)}. Current access remains unchanged until then.</small></div><button className="button button--subtle" disabled={!canManageBilling || busyKey !== null} title={canManageBilling ? undefined : "Only workspace owners and admins can manage billing."} onClick={() => void cancelDowngrade()}>{busyKey === "cancel-downgrade" ? "Cancelling…" : "Keep current plan"}</button></div> : null}
 
       <div className="billing-usage panel">
         <div className="billing-usage__heading"><div><span className="eyebrow">CURRENT ENTITLEMENT</span><h3>{billing.plan.name} plan <em>{billing.subscription.status}</em></h3></div><span className="billing-period">{billing.subscription.renewalMode === "manual" ? "Manual renewal · period ends" : "Renews"} {formatDate(billing.subscription.currentPeriodEnd)}</span></div>
@@ -611,10 +629,11 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
         <div className="billing-service-orders__list">{serviceOrders.map((order) => <article className="billing-service-order" key={order.id}><div className="billing-service-order__top"><div><span className="eyebrow">{order.kind === "security_audit" ? "SECURITY AUDIT" : "IMPLEMENTATION SUPPORT"}</span><h4>{order.addonName}</h4></div><b className={`billing-service-order__status billing-service-order__status--${order.status}`}>{serviceStatusLabel(order.status)}</b></div><div className="billing-service-order__meta"><span>Scope<strong>{order.scope}</strong></span><span>Timebox<strong>{order.includedHours} hours included</strong></span><span>Target<strong>{order.targetAgentName ?? "Workspace engagement"}</strong></span><span>Opened<strong>{formatDate(order.createdAt)}</strong></span></div><small>{order.deliveryWindow} {order.overagePolicy}</small></article>)}</div>
       </section> : null}
 
-      <div className="billing-plan-grid">
+      <div className="billing-plan-grid" id="billing-plans">
         {plans.map((plan) => {
           const current = plan.id === billing.plan.id;
           const downgrade = !current && planRank(plan.id) < planRank(billing.plan.id) && billing.entitlements.active;
+          const expiredPlan = billing.subscription.lastExpiryFallback?.fromPlanId === plan.id;
           const recommended = plan.id === "team";
           return <article className={`billing-plan-card ${current ? "billing-plan-card--current" : ""} ${recommended ? "billing-plan-card--recommended" : ""}`} key={plan.id}>
             {current ? <span className="billing-plan-card__current">CURRENT PLAN</span> : null}
@@ -626,7 +645,7 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
             <ul>{plan.features.map((feature) => <li key={feature}><i />{feature}</li>)}</ul>
             <div className="billing-plan-card__entitlements"><span className={plan.runtimeFirewall ? "is-on" : ""}><i />Runtime</span><span className={plan.autopilot ? "is-on" : ""}><i />Autopilot</span><span className={plan.sentinel ? "is-on" : ""}><i />Sentinel</span><span className={plan.incidentCenter ? "is-on" : ""}><i />Incidents</span><span className={plan.alertWebhooks ? "is-on" : ""}><i />Webhooks{plan.maxWebhooks ? ` · ${plan.maxWebhooks}` : ""}</span></div>
             {current && plan.priceUsdCents > 0 ? <small className="billing-plan-card__period">Current period ends {formatDate(billing.subscription.currentPeriodEnd)} · renewal is manual</small> : null}
-            <button className={`button ${current ? "button--subtle" : "button--ghost"}`} disabled={(current && plan.priceUsdCents === 0) || busyKey !== null} onClick={() => void startPlanChange(plan)}>{current ? (plan.priceUsdCents === 0 ? "Active plan" : "Renew manually") : busyKey === `plan:${plan.id}` ? (downgrade ? "Scheduling…" : "Opening checkout…") : downgrade ? `Downgrade to ${plan.name}` : "Upgrade with USDT"}</button>
+            <button className={`button ${current ? "button--subtle" : "button--ghost"}`} disabled={!canManageBilling || (current && plan.priceUsdCents === 0) || busyKey !== null} title={canManageBilling ? undefined : "Only workspace owners and admins can manage billing."} onClick={() => void startPlanChange(plan)}>{current ? (plan.priceUsdCents === 0 ? "Active plan" : "Renew manually") : busyKey === `plan:${plan.id}` ? (downgrade ? "Scheduling…" : "Opening checkout…") : downgrade ? `Downgrade to ${plan.name}` : expiredPlan ? `Renew ${plan.name}` : "Upgrade with USDT"}</button>
           </article>;
         })}
       </div>
@@ -640,7 +659,7 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
             {addon.serviceScope ? <div className="billing-service-terms"><div><span>Scope</span><p>{addon.serviceScope}</p></div><div><span>Timebox</span><p>{addon.includedHours} included service hours. Additional work is separately quoted.</p></div><div><span>Delivery</span><p>{addon.deliveryWindow}</p></div><div><span>Acceptance</span><p>{addon.acceptanceTerms}</p></div><div><span>Overage</span><p>{addon.overagePolicy}</p></div></div> : null}
             {addon.kind === "security_audit" ? <AgentPicker agents={agents} value={auditAgentId} onChange={setAuditAgentId} /> : null}
             {addon.serviceScope ? <label className="billing-service-consent"><input type="checkbox" checked={serviceAcknowledged[addon.id] === true} onChange={(event) => setServiceAcknowledged((current) => ({ ...current, [addon.id]: event.target.checked }))} /><span>I reviewed the scope and acceptance terms.</span></label> : null}
-            <button className="button button--ghost" disabled={busyKey !== null} onClick={() => void buyAddon(addon)}>{busyKey === `addon:${addon.id}` ? "Opening checkout…" : addon.serviceScope ? "Continue to USDT checkout" : "Buy with USDT"}</button>
+            <button className="button button--ghost" disabled={!canManageBilling || busyKey !== null} title={canManageBilling ? undefined : "Only workspace owners and admins can purchase add-ons."} onClick={() => void buyAddon(addon)}>{busyKey === `addon:${addon.id}` ? "Opening checkout…" : addon.serviceScope ? "Continue to USDT checkout" : "Buy with USDT"}</button>
           </article>)}
         </div>
       </div>

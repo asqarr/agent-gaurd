@@ -75,9 +75,11 @@ function normalizeTransfer(item, source) {
   const contract = String(
     tokenInfo.address
       ?? tokenInfo.contract_address
+      ?? tokenInfo.tokenId
       ?? item.contract_address
       ?? item.contractAddress
       ?? item.trc20Id
+      ?? item.id
       ?? "",
   ).trim();
   const timestamp = normalizeTimestamp(
@@ -88,7 +90,13 @@ function normalizeTransfer(item, source) {
       ?? item.time,
   );
   const decimals = Number(tokenInfo.decimals ?? item.decimals ?? TRON_USDT_DECIMALS);
-  const status = String(item.contract_ret ?? item.contractRet ?? item.status ?? "SUCCESS").toUpperCase();
+  const reverted = item.revert === true
+    || item.revert === 1
+    || item.revert === "1"
+    || String(item.finalResult ?? "").toUpperCase() === "FAIL";
+  const status = reverted
+    ? "REVERT"
+    : String(item.contract_ret ?? item.contractRet ?? item.status ?? "SUCCESS").toUpperCase();
 
   return {
     txHash,
@@ -292,7 +300,7 @@ export function isMatchingIncomingTransfer(transfer, {
   if (!transfer.timestamp || transfer.timestamp < created) return false;
   if (expiry && transfer.timestamp > expiry) return false;
   if (transfer.timestamp > new Date(current.getTime() + 5 * 60 * 1000)) return false;
-  if (!transfer.confirmed || transfer.status === "REVERT" || transfer.status === "FAILED") return false;
+  if (!transfer.confirmed || ["REVERT", "FAILED", "FAIL"].includes(transfer.status)) return false;
   return true;
 }
 

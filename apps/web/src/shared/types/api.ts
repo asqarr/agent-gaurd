@@ -331,6 +331,11 @@ export type BillingState = {
     renewalMode: "manual" | "automatic";
     pendingPlanId: string | null;
     pendingPlanEffectiveAt: string | null;
+    lastExpiryFallback: {
+      fromPlanId: string;
+      fromPlanName: string;
+      at: string;
+    } | null;
   };
   usage: {
     periodStart: string;

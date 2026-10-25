@@ -64,9 +64,11 @@
             "description": "Security testing and runtime protection for Shopify and WooCommerce support agents.",
             "url": "__SITE_URL__/",
             "offers": {
-              "@type": "Offer",
-              "price": "0",
-              "priceCurrency": "USD"
+              "@type": "AggregateOffer",
+              "lowPrice": "0",
+              "highPrice": "399",
+              "priceCurrency": "USD",
+              "offerCount": "4"
             },
             "featureList": [
               "AI agent security testing",
@@ -125,6 +127,7 @@
       >
       <nav aria-label="Main navigation">
         <a href="#how-it-works">How it works</a
+        ><a href="#pricing">Pricing</a
         ><a href="#coverage">Security coverage</a
         ><a href="#trust">Data &amp; safety</a
         ><a href="/attack-lab.html">Attack Lab</a
@@ -289,6 +292,55 @@
           </article>
         </div>
       </section>
+      <section class="mk-section mk-section--surface mk-pricing" id="pricing">
+        <div class="mk-section__heading mk-section__heading--split">
+          <div>
+            <span class="mk-kicker">SIMPLE, USAGE-BASED PLANS</span>
+            <h2>Choose the control plane<br /><em>your agency needs.</em></h2>
+            <p>Start free, then scale testing depth, protected agents, runtime decisions, and evidence retention as your client portfolio grows.</p>
+          </div>
+          <span class="mk-pricing__note">All paid plans renew manually in USDT on TRON.</span>
+        </div>
+        <div class="mk-pricing-grid">
+          <article class="mk-pricing-card">
+            <div class="mk-pricing-card__top"><span>EXPLORER</span><strong>FREE</strong></div>
+            <p>Validate one storefront agent and its essential security boundary.</p>
+            <ul><li>1 protected agent</li><li>20 one-time scan credits</li><li>5 baseline scenarios</li><li>7-day evidence retention</li></ul>
+            <a class="mk-button mk-button--ghost" href="/app.html">Start free <b>→</b></a>
+          </article>
+          <article class="mk-pricing-card mk-pricing-card--featured">
+            <b class="mk-pricing-card__badge">MOST POPULAR</b>
+            <div class="mk-pricing-card__top"><span>BUILDER</span><strong>$49<small>/ month</small></strong></div>
+            <p>Ship safer Shopify or WooCommerce agents with the full adversarial suite.</p>
+            <ul><li>2 protected agents</li><li>200 monthly scan credits</li><li>12-scenario red-team suite</li><li>Runtime Firewall</li><li>30-day evidence retention</li></ul>
+            <a class="mk-button mk-button--primary" href="/app.html">Choose Builder <b>→</b></a>
+          </article>
+          <article class="mk-pricing-card">
+            <div class="mk-pricing-card__top"><span>PRO</span><strong>$149<small>/ month</small></strong></div>
+            <p>Run security operations across a growing production agent fleet.</p>
+            <ul><li>5 protected agents</li><li>1,000 monthly scan credits</li><li>100,000 runtime decisions</li><li>Autopilot + Sentinel</li><li>90-day evidence retention</li></ul>
+            <a class="mk-button mk-button--ghost" href="/app.html">Choose Pro <b>→</b></a>
+          </article>
+          <article class="mk-pricing-card">
+            <div class="mk-pricing-card__top"><span>AGENCY</span><strong>$399<small>/ month</small></strong></div>
+            <p>Operate a multi-client security program from one control plane.</p>
+            <ul><li>15 protected agents</li><li>4,000 monthly scan credits</li><li>500,000 runtime decisions</li><li>Multi-client management</li><li>180-day evidence retention</li></ul>
+            <a class="mk-button mk-button--ghost" href="/app.html">Choose Agency <b>→</b></a>
+          </article>
+        </div>
+        <div class="mk-pricing-table-wrap">
+          <table class="mk-pricing-table">
+            <caption>Plan comparison at a glance</caption>
+            <thead><tr><th scope="col">Capability</th><th scope="col">Explorer</th><th scope="col">Builder</th><th scope="col">Pro</th><th scope="col">Agency</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">Full 12-scenario suite</th><td>—</td><td>Included</td><td>Included</td><td>Included</td></tr>
+              <tr><th scope="row">Runtime Firewall</th><td>—</td><td>Included</td><td>Included</td><td>Included</td></tr>
+              <tr><th scope="row">Autopilot / Sentinel</th><td>—</td><td>—</td><td>Included</td><td>Included</td></tr>
+              <tr><th scope="row">Evidence retention</th><td>7 days</td><td>30 days</td><td>90 days</td><td>180 days</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
       <section class="mk-section mk-section--surface" id="trust">
         <div class="mk-section__heading">
           <span class="mk-kicker">TRUST &amp; DATA HANDLING</span>
@@ -421,7 +473,7 @@
         >
       </section>
     </main>
-    <footer class="mk-footer">
+    <footer class="mk-footer" id="contact">
       <a class="mk-brand" href="/"
         ><span class="mk-brand-mark"><i></i><i></i><i></i></span>AGENT<span
           >GUARD</span
@@ -429,6 +481,7 @@
       ><span
         >AI agent security testing, red teaming, and runtime protection.</span
       ><span>© 2026 AgentGuard</span>
+      <span class="mk-footer__links"><a href="/privacy.html">Privacy Policy</a><a href="/terms.html">Terms</a><a href="mailto:hello@agentguard.dev">Contact</a></span>
       <span class="mk-privacy-status">Anonymous first-party session metrics only; no third-party analytics.</span>
       <button class="mk-privacy-toggle" type="button" data-growth-analytics-toggle aria-pressed="true">Disable anonymous analytics</button>
       <span class="mk-privacy-status" data-growth-analytics-status aria-live="polite"></span>

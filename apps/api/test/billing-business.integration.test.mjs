@@ -53,6 +53,14 @@ test("billing rules enforce one-time free credits, add-ons, alerts and manual do
   assert.equal(initial.body.plan.scanCreditMode, "one_time");
   assert.equal(initial.body.usage.scanCreditsUsed, 0);
 
+  const concurrentCheckoutKey = `concurrent-plan-${Date.now()}`;
+  const concurrentCheckouts = await Promise.all([
+    repository.createCheckoutSession({ workspaceId, planId: "builder", provider: "tron-p2p", idempotencyKey: concurrentCheckoutKey }),
+    repository.createCheckoutSession({ workspaceId, planId: "builder", provider: "tron-p2p", idempotencyKey: concurrentCheckoutKey }),
+  ]);
+  assert.equal(concurrentCheckouts[0].id, concurrentCheckouts[1].id);
+  assert.equal(concurrentCheckouts[0].paymentAmountAtomic, concurrentCheckouts[1].paymentAmountAtomic);
+
   const agent = await api("/api/agents", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -111,7 +119,21 @@ test("billing rules enforce one-time free credits, add-ons, alerts and manual do
   assert.equal(afterPeriodBoundary.body.usage.scanCreditsIncluded, 20);
 
   await query(
-    "UPDATE workspace_subscriptions SET plan_id='builder', status='active', current_period_end=NOW() + INTERVAL '30 days' WHERE workspace_id=$1",
+    "UPDATE workspace_subscriptions SET plan_id='builder', status='active', current_period_end=NOW() - INTERVAL '1 day', metadata='{}'::jsonb WHERE workspace_id=$1",
+    [workspaceId],
+  );
+  const afterPaidPeriodBoundary = await api("/api/billing");
+  assert.equal(afterPaidPeriodBoundary.body.plan.id, "free");
+  assert.equal(afterPaidPeriodBoundary.body.subscription.status, "active");
+  assert.equal(afterPaidPeriodBoundary.body.subscription.lastExpiryFallback.fromPlanId, "builder");
+  assert.equal(afterPaidPeriodBoundary.body.entitlements.maxAgents, 1);
+  assert.equal(afterPaidPeriodBoundary.body.entitlements.scenarioLimit, 5);
+  assert.equal(afterPaidPeriodBoundary.body.entitlements.runtimeFirewall, false);
+  assert.equal(afterPaidPeriodBoundary.body.usage.scanCreditsIncluded, 20);
+  assert.equal(afterPaidPeriodBoundary.body.usage.scanCreditsUsed, 20);
+
+  await query(
+    "UPDATE workspace_subscriptions SET plan_id='builder', status='active', current_period_end=NOW() + INTERVAL '30 days', metadata='{}'::jsonb WHERE workspace_id=$1",
     [workspaceId],
   );
   await query(
@@ -164,7 +186,10 @@ test("billing rules enforce one-time free credits, add-ons, alerts and manual do
   await repository.captureUsageStorageSnapshots();
   const measured = await repository.getUsageEconomics(workspaceId);
   assert.equal(measured.measurement.runtimeDecisions, 1);
-  assert.equal(measured.measurement.maxDurationMs, 99);
+  // The scan worker may record a slower operation in the same period while
+  // this integration test is running; the explicitly inserted sample must
+  // still be represented in the aggregate.
+  assert.ok(measured.measurement.maxDurationMs >= 99);
   assert.equal(measured.unitEconomics.per10000RuntimeDecisions.sampleUnits, 1);
   assert.equal(measured.unitEconomics.per1000ScanCredits.sampleUnits, measured.measurement.scanCredits);
   assert.ok(measured.storage);

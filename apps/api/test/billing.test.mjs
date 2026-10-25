@@ -82,12 +82,98 @@ test("direct TRON verification falls back to TronScan and rejects transfers befo
     calls += 1;
     if (String(url).startsWith("https://grid.test")) return new Response("rate limited", { status: 429 });
     return new Response(JSON.stringify({ data: [
-      { hash: "c".repeat(64), trc20Id: contract, from_address: "Tsender", to_address: address, quant: "49000000", block_ts: createdAt.getTime() - 1, confirmed: true },
+      { hash: "c".repeat(64), id: contract, from: "Tsender", to: address, amount: "49000000", block_timestamp: createdAt.getTime() - 1, confirmed: 1, revert: 0, contract_ret: "SUCCESS" },
     ] }), { status: 200, headers: { "Content-Type": "application/json" } });
   };
   try {
     const transfer = await findMatchingIncomingTransfer({ address, expectedAtomic: "49000000", createdAt, expiresAt: new Date(Date.now() + 600_000) });
     assert.equal(calls, 2);
+    assert.equal(transfer, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.MY_TRONLINK_PUBLIC_ADDRESS;
+    delete process.env.TRON_USDT_CONTRACT;
+    delete process.env.TRON_GRID_URL;
+    delete process.env.TRONSCAN_API_URL;
+  }
+});
+
+test("direct TRON verification accepts the current TronScan transfer shape", async () => {
+  const originalFetch = globalThis.fetch;
+  const address = "TDg6Vo6pkvKLy1jPpD4LBSLa3EwrVEk2JP";
+  const contract = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+  const createdAt = new Date(Date.now() - 60_000);
+  process.env.MY_TRONLINK_PUBLIC_ADDRESS = address;
+  process.env.TRON_USDT_CONTRACT = contract;
+  process.env.TRON_GRID_URL = "https://grid.test";
+  process.env.TRONSCAN_API_URL = "https://scan.test";
+  globalThis.fetch = async (url) => {
+    if (String(url).startsWith("https://grid.test")) return new Response("rate limited", { status: 429 });
+    return new Response(JSON.stringify({ data: [
+      {
+        hash: "f".repeat(64),
+        id: contract,
+        from: "Tsender",
+        to: address,
+        amount: "49000000",
+        block_timestamp: Date.now(),
+        confirmed: 1,
+        revert: 0,
+        finalResult: "SUCCESS",
+        contract_ret: "SUCCESS",
+        decimals: 6,
+      },
+    ] }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const transfer = await findMatchingIncomingTransfer({
+      address,
+      expectedAtomic: "49000000",
+      createdAt,
+      expiresAt: new Date(Date.now() + 600_000),
+    });
+    assert.equal(transfer?.txHash, "f".repeat(64));
+    assert.equal(transfer?.contract, contract);
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.MY_TRONLINK_PUBLIC_ADDRESS;
+    delete process.env.TRON_USDT_CONTRACT;
+    delete process.env.TRON_GRID_URL;
+    delete process.env.TRONSCAN_API_URL;
+  }
+});
+
+test("direct TRON verification rejects TronScan reverted transfers", async () => {
+  const originalFetch = globalThis.fetch;
+  const address = "TDg6Vo6pkvKLy1jPpD4LBSLa3EwrVEk2JP";
+  const contract = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+  process.env.MY_TRONLINK_PUBLIC_ADDRESS = address;
+  process.env.TRON_USDT_CONTRACT = contract;
+  process.env.TRON_GRID_URL = "https://grid.test";
+  process.env.TRONSCAN_API_URL = "https://scan.test";
+  globalThis.fetch = async (url) => {
+    if (String(url).startsWith("https://grid.test")) return new Response("rate limited", { status: 429 });
+    return new Response(JSON.stringify({ data: [
+      {
+        hash: "g".repeat(64),
+        id: contract,
+        from: "Tsender",
+        to: address,
+        amount: "49000000",
+        block_timestamp: Date.now(),
+        confirmed: 1,
+        revert: 1,
+        finalResult: "FAIL",
+      },
+    ] }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const transfer = await findMatchingIncomingTransfer({
+      address,
+      expectedAtomic: "49000000",
+      createdAt: new Date(Date.now() - 60_000),
+      expiresAt: new Date(Date.now() + 600_000),
+    });
     assert.equal(transfer, null);
   } finally {
     globalThis.fetch = originalFetch;

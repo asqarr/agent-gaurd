@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#080c18" />
+    <link rel="stylesheet" href="/marketing.css" />
+    <link rel="stylesheet" href="/marketing-overrides.css" />
+    <meta name="description" content="AgentGuard Privacy Policy: what we collect, how workspace evidence is protected, and how long it is retained." />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <link rel="canonical" href="__SITE_URL__/privacy.html" />
+    <title>Privacy Policy | AgentGuard</title>
+  </head>
+  <body>
+    <header class="mk-header">
+      <a class="mk-brand" href="/"><span class="mk-brand-mark"><i></i><i></i><i></i></span>AGENT<span>GUARD</span><small>OS</small></a>
+      <nav><a href="/#how-it-works">How it works</a><a href="/#pricing">Pricing</a><a href="/#trust">Data &amp; safety</a></nav>
+      <a class="mk-button mk-button--ghost" href="/app.html">Open dashboard <b>↗</b></a>
+    </header>
+    <main class="mk-article">
+      <div class="mk-article__intro">
+        <span class="mk-kicker"><i></i> PRIVACY POLICY</span>
+        <h1>Data should have a boundary.</h1>
+        <p>AgentGuard helps agencies test and protect AI storefront agents. This policy explains what the service stores, why it is needed, and how workspace evidence is handled.</p>
+        <div class="mk-article__meta">Last updated October 25, 2026 <span>·</span> 4 min read</div>
+      </div>
+      <div class="mk-article__layout">
+        <article class="mk-prose">
+          <h2>1. Information we collect</h2>
+          <p><strong>Account and workspace data.</strong> We collect your name, email address, password hash, workspace name, role, session records, and security settings needed to operate the control plane.</p>
+          <p><strong>Agent and scan data.</strong> When you connect an agent, we store its configuration, endpoint metadata, scan scenarios, responses, proposed tool calls, policy decisions, timestamps, and audit evidence. Endpoint URLs and credentials are encrypted at rest; the dashboard displays only the endpoint host where possible.</p>
+          <p><strong>Billing data.</strong> For direct USDT-TRC20 payments, we store the checkout order, amount, recipient wallet, transaction hash, confirmation status, and entitlement history. Blockchain transfers are public by design.</p>
+          <p><strong>Optional product analytics.</strong> The public site may collect limited first-party session events such as page and CTA interaction. There is no third-party advertising tracker, and visitors can disable these metrics from the privacy control.</p>
+
+          <h2>2. How we use information</h2>
+          <p>We use information to authenticate users, isolate workspaces, run requested security tests, produce reproducible reports, enforce plan limits, verify payments, prevent abuse, troubleshoot incidents, and improve the service. We do not sell workspace data.</p>
+
+          <h2>3. Retention and deletion</h2>
+          <p>Scan evidence follows the selected plan: 7 days on Explorer, 30 days on Builder, 90 days on Pro, and 180 days on Agency. Expired scan evidence is purged by an automated worker. Deleting a workspace removes its agents, scans, incidents, secrets, and billing records from the application database, subject to backups and records we must retain for security, fraud prevention, or legal compliance.</p>
+
+          <h2>4. Endpoint safety</h2>
+          <p>AgentGuard sends synthetic security scenarios to configured JSON HTTP endpoints. The public Attack Lab does not access customer systems. For connected agents, use a staging or mock executor: an agent endpoint may perform its own side effects even though AgentGuard does not execute tool calls on your behalf.</p>
+
+          <h2>5. Security and service providers</h2>
+          <p>We use access controls, workspace isolation, encrypted secrets, HTTPS requirements for production endpoints, and audit trails to protect the service. Hosting, database, email, and blockchain data providers may process information only as needed to deliver the service. No security control eliminates all risk; report suspected vulnerabilities to <a href="mailto:security@agentguard.dev">security@agentguard.dev</a>.</p>
+
+          <h2>6. Your choices</h2>
+          <p>You may update your profile, disable optional analytics, export eligible evidence, or request workspace deletion from the product. For privacy questions or requests, contact <a href="mailto:hello@agentguard.dev">hello@agentguard.dev</a>.</p>
+        </article>
+        <aside class="mk-article__aside">
+          <div class="mk-aside-card"><strong>At a glance</strong><p>Workspace-scoped evidence, encrypted agent credentials, plan-based retention, and no third-party advertising analytics.</p><a href="/terms.html">Read the Terms →</a></div>
+          <div class="mk-aside-card mk-aside-card--muted"><strong>Need a deletion request?</strong><p>Email the workspace owner or contact us from the account email.</p><a href="mailto:hello@agentguard.dev">Contact AgentGuard →</a></div>
+        </aside>
+      </div>
+    </main>
+    <footer class="mk-footer" id="contact"><a class="mk-brand" href="/"><span class="mk-brand-mark"><i></i><i></i><i></i></span>AGENT<span>GUARD</span><small>OS</small></a><span>© 2026 AgentGuard</span><span class="mk-footer__links"><a href="/privacy.html">Privacy Policy</a><a href="/terms.html">Terms</a><a href="mailto:hello@agentguard.dev">Contact</a></span></footer>
+  </body>
+</html>

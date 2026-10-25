@@ -256,26 +256,31 @@ async function ensureWorkspaceSubscription(client, workspaceId) {
 async function lockBillingState(client, workspaceId) {
   let subscription = await ensureWorkspaceSubscription(client, workspaceId);
   const now = new Date();
+  let expiryFallback = null;
   if (new Date(subscription.current_period_end) <= now) {
-    if (subscription.pending_plan_id) {
+    if (subscription.plan_id !== "free") {
       const { start, end } = billingPeriodBounds(now);
-      const nextPlan = await client.query(
-        "SELECT id FROM subscription_plans WHERE id=$1 AND active=TRUE",
-        [subscription.pending_plan_id],
+      expiryFallback = {
+        fromPlanId: subscription.plan_id,
+        fromPlanName: subscription.plan_name,
+        at: now.toISOString(),
+      };
+      const metadata = {
+        ...(subscription.metadata && typeof subscription.metadata === "object" ? subscription.metadata : {}),
+        lastExpiryFallback: expiryFallback,
+      };
+      await client.query(
+        `UPDATE workspace_subscriptions
+         SET plan_id='free', status='active', billing_provider='internal',
+             provider_customer_id=NULL, provider_subscription_id=NULL,
+             current_period_start=$2, current_period_end=$3,
+             renewal_mode='manual', pending_plan_id=NULL,
+             pending_plan_effective_at=NULL, cancel_at_period_end=FALSE,
+             metadata=$4::jsonb, updated_at=NOW()
+         WHERE id=$1`,
+        [subscription.id, start, end, JSON.stringify(metadata)],
       );
-      if (nextPlan.rowCount) {
-        await client.query(
-          `UPDATE workspace_subscriptions
-           SET plan_id=$2,
-               status=CASE WHEN $2='free' THEN 'active' ELSE 'past_due' END,
-               current_period_start=$3, current_period_end=$4,
-               pending_plan_id=NULL, pending_plan_effective_at=NULL,
-               updated_at=NOW()
-           WHERE id=$1`,
-          [subscription.id, subscription.pending_plan_id, start, end],
-        );
-      }
-    } else if (subscription.plan_id === "free") {
+    } else {
       const { start, end } = billingPeriodBounds(now);
       await client.query(
         `UPDATE workspace_subscriptions
@@ -283,11 +288,6 @@ async function lockBillingState(client, workspaceId) {
              updated_at=NOW()
          WHERE id=$1`,
         [subscription.id, start, end],
-      );
-    } else if (["active", "trialing"].includes(subscription.status)) {
-      await client.query(
-        "UPDATE workspace_subscriptions SET status='past_due', updated_at=NOW() WHERE id=$1",
-        [subscription.id],
       );
     }
     subscription = await ensureWorkspaceSubscription(client, workspaceId);
@@ -321,6 +321,7 @@ async function lockBillingState(client, workspaceId) {
     plan: mapBillingPlan(subscription),
     usage: usageRow,
     active,
+    expiryFallback,
   };
 }
 
@@ -357,6 +358,7 @@ function mapBillingState(state) {
       renewalMode: state.subscription.renewal_mode ?? "manual",
       pendingPlanId: state.subscription.pending_plan_id ?? null,
       pendingPlanEffectiveAt: state.subscription.pending_plan_effective_at ?? null,
+      lastExpiryFallback: state.expiryFallback ?? state.subscription.metadata?.lastExpiryFallback ?? null,
     },
     usage: {
       periodStart: state.usage?.period_start ?? state.subscription.current_period_start,
@@ -1094,7 +1096,13 @@ export async function createCheckoutSession({
         return mapCheckoutSession(result.rows[0]);
       });
     } catch (error) {
-      if (error?.code === "23505" && String(error?.constraint ?? "").includes("tron_quote")) continue;
+      if (error?.code === "23505") {
+        const constraint = String(error?.constraint ?? "");
+        // Concurrent retries may race before either transaction can observe
+        // the idempotency row. Retry the read path so both callers receive
+        // the same checkout instead of exposing a database 500.
+        if (constraint.includes("tron_quote") || constraint.includes("workspace_id_idempotency_key")) continue;
+      }
       throw error;
     }
   }
@@ -1476,6 +1484,7 @@ async function applyVerifiedCryptoPaymentInTransaction(client, input, {
                  current_period_start=$3, current_period_end=$4,
                  renewal_mode='manual', pending_plan_id=NULL,
                  pending_plan_effective_at=NULL, cancel_at_period_end=FALSE,
+                 metadata=COALESCE(metadata, '{}'::jsonb) - 'lastExpiryFallback',
                  updated_at=NOW()
              WHERE workspace_id=$1`,
             [session.workspace_id, session.plan_id, start, end, persistedProvider],
