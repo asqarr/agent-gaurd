@@ -70,13 +70,20 @@ import billingRouter from "./features/billing/billing-router.mjs";
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const webDistPath = path.resolve(__dirname, "../../web/dist");
+const publicPath = path.join(__dirname, "../../web/dist");
 const requestMetrics = {
   startedAt: Date.now(),
   requests: 0,
   errors: 0,
   totalLatencyMs: 0,
 };
+
+// Serve the production React build before any API or security middleware.
+// This keeps browser assets public on the single Render web service while
+// API requests continue through the normal middleware and authentication.
+app.use(express.static(publicPath));
+app.use("/assets", express.static(path.join(publicPath, "assets")));
+
 app.disable("x-powered-by");
 app.set("trust proxy", config.trustProxy);
 app.use((req, res, next) => {
@@ -133,11 +140,6 @@ app.use((req, res, next) => {
   }
   next();
 });
-
-// The API image also serves the production React build. Keep this before the
-// API routers so browser assets and client-side routes work on a single Render
-// Web Service, while /api/* continues through the normal API middleware.
-app.use(express.static(webDistPath, { index: "index.html" }));
 
 function publicUser(user) {
   return {
@@ -2550,7 +2552,7 @@ app.patch("/api/policies/:policyId", async (req, res, next) => {
 // deep-links without turning an unknown API path into index.html.
 app.get("/{*splat}", (req, res, next) => {
   if (req.path === "/api" || req.path.startsWith("/api/")) return next();
-  return res.sendFile(path.join(webDistPath, "index.html"), (error) => {
+  return res.sendFile(path.join(publicPath, "index.html"), (error) => {
     if (error) next(error);
   });
 });

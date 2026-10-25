@@ -17,7 +17,7 @@ COPY docker-compose.prod.yml Caddyfile ./
 
 # Build the React application into apps/web/dist so the API can serve the
 # dashboard when deployed as a single Render Web Service.
-RUN npm run build
+RUN npm run build --workspace=apps/web
 RUN npm prune --omit=dev
 
 ENV NODE_ENV=production
