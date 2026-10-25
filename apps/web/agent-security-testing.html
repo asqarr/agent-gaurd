@@ -89,7 +89,8 @@
           <h2>What should an agent security test cover?</h2>
           <p>
             A useful suite tests the agent’s decisions under pressure, not only
-            whether it follows a happy-path instruction. Start with five layers:
+            whether it follows a happy-path instruction. The current
+            12-scenario suite covers six practical layers:
           </p>
           <ol>
             <li>
@@ -116,6 +117,14 @@
               <strong>Runtime enforcement.</strong> Put a fail-closed guard in
               front of execution so a new prompt or model regression cannot
               directly reach a side effect.
+            </li>
+            <li>
+              <strong>Goal and memory boundaries.</strong> Treat retrieved
+              instructions, customer claims, and agent memory as untrusted
+              until the server re-validates identity, tenant, order, and tool
+              authority. Persistent memory poisoning and long-horizon goal
+              drift should be added as custom regression scenarios before a
+              production rollout.
             </li>
           </ol>
           <h2>Why single-turn jailbreak tests are not enough</h2>

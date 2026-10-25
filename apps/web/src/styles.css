@@ -524,8 +524,12 @@ button:disabled {
   justify-content: space-between;
   align-items: flex-end;
   gap: 25px;
+  min-width: 0;
   padding: 55px 0 38px;
 }
+.page-heading > div:first-child { min-width: 0; }
+.page-heading h1 { overflow-wrap: anywhere; }
+.heading-actions { flex: 0 0 auto; }
 .eyebrow--cyan {
   color: #5ee2db;
 }
@@ -1519,6 +1523,11 @@ button:disabled {
 .evidence-call span { display: block; color: #718198; font: 8px "DM Mono", monospace; text-transform: uppercase; letter-spacing: .04em; }
 .scan-evidence__summary strong { display: block; margin-top: 8px; color: #dce8f4; font: 13px "DM Mono", monospace; }
 .scan-evidence__summary strong small { margin-left: 3px; color: #66768d; font-size: 8px; }
+.scan-evidence__legend { display: flex; flex-wrap: wrap; gap: 7px 14px; padding: 10px 2px 0; color: #7990a2; font: 8px/1.5 "DM Mono", monospace; }
+.scan-evidence__legend span { display: inline-flex; align-items: center; gap: 5px; }
+.scan-legend-dot { width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: #6ce0b8; }
+.scan-legend-dot--blocked { background: #69d7dd; }
+.scan-legend-dot--finding { background: #f3a173; }
 .scan-evidence__error { display: flex; flex-direction: column; gap: 5px; padding: 12px; margin-top: 14px; border: 1px solid rgba(255, 137, 105, .28); border-radius: 7px; color: #f0ae92; background: rgba(85, 39, 39, .22); font-size: 10px; }
 .scan-evidence__error span { color: #b9877d; font: 9px "DM Mono", monospace; word-break: break-word; }
 .threat-replay { margin-top: 17px; border: 1px solid #24485a; border-radius: 9px; background: linear-gradient(135deg, rgba(10, 33, 46, .75), rgba(10, 20, 35, .78)); overflow: hidden; }
@@ -2776,6 +2785,8 @@ select {
 .settings-facts strong { color: #c0d9de; font-size: 10px; font-weight: 500; text-align: right; }
 .settings-security-note { display: flex; align-items: flex-start; gap: 8px; padding: 12px; margin-top: 16px; border: 1px solid #27544f; border-radius: 6px; color: #77d6c1; background: rgba(24, 87, 75, .14); }
 .settings-security-note span { color: #82a99f; font: 8px "DM Mono", monospace; line-height: 1.55; }
+.settings-security-alert { display: flex; align-items: flex-start; gap: 8px; padding: 11px 12px; margin-top: 14px; border: 1px solid #806631; border-radius: 6px; color: #f0cd83; background: rgba(91, 66, 21, .2); }
+.settings-security-alert span { color: #c4aa76; font: 8px/1.55 "DM Mono", monospace; }
 .settings-card--team .settings-card__heading p { max-width: 380px; }
 .settings-member-list { display: grid; gap: 8px; margin-top: 18px; }
 .settings-member { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 9px; border: 1px solid #20394d; border-radius: 6px; background: rgba(8, 20, 34, .65); }

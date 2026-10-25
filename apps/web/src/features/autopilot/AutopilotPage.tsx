@@ -106,7 +106,7 @@ function AssessmentProgress({ assessment }: { assessment: AutopilotAssessment })
             <div key={item.scenarioId} className={`autopilot-test-row autopilot-test-row--${item.status}`}>
               <i />
               <span>{item.title}</span>
-              <small>{item.status === "running" ? "Testing" : item.status}</small>
+              <small>{item.status === "running" ? "Testing" : item.status === "blocked" ? "Blocked safely" : item.status === "passed" ? "Passed" : item.status === "failed" ? "Finding" : item.status === "error" ? "Error" : "Queued"}</small>
             </div>
           ))}
         </div>

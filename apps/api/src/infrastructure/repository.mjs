@@ -2109,6 +2109,11 @@ export async function getWorkspaceSettings({ userId, workspaceId }) {
   const user = userResult.rows[0];
   const workspace = workspaceResult.rows[0];
   if (!user || !workspace) return null;
+  const passwordChangedAt = user.password_changed_at &&
+    Number.isFinite(new Date(user.password_changed_at).getTime()) &&
+    new Date(user.password_changed_at).getTime() > 0
+    ? user.password_changed_at
+    : null;
 
   return {
     user: {
@@ -2128,7 +2133,7 @@ export async function getWorkspaceSettings({ userId, workspaceId }) {
     },
     members: membersResult.rows.map(mapWorkspaceMember),
     security: {
-      passwordChangedAt: user.password_changed_at,
+      passwordChangedAt,
       emailVerified: Boolean(user.email_verified_at),
       mfaEnabled: Boolean(user.mfa_enabled),
       sessionDurationDays: 30,

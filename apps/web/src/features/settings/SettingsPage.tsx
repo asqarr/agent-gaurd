@@ -12,7 +12,10 @@ import {
 import type { SessionUser, WorkspaceSettings } from "../../shared/types/api";
 import { Icon } from "../../shared/ui/Icon";
 
-function formatDate(value: string) {
+function formatDate(value: string | null | undefined) {
+  if (!value) return "Not available";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime()) || date.getTime() <= 0) return "Not available";
   return new Intl.DateTimeFormat("en", {
     month: "short",
     day: "numeric",
@@ -517,6 +520,12 @@ export function SettingsPage({
                 older tokens at the API boundary.
               </span>
             </div>
+            {!settings.security.mfaEnabled ? (
+              <div className="settings-security-alert" role="status">
+                <Icon name="shield" size={15} />
+                <span>Administrator MFA is not enabled. Turn on TOTP before inviting teammates or connecting production agents.</span>
+              </div>
+            ) : null}
           </div>
 
           <div className="panel settings-card settings-card--team">

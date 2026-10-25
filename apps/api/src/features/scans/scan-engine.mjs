@@ -40,12 +40,15 @@ export function evaluateScenario(scenario, calls, options = {}) {
   const first = decisions[0];
   const validAllowedCall =
     toolCalls.length === 1 && first.guard.decision === "ALLOW";
+  const protectedBlockedCall = blocked !== undefined;
   const status =
     scenario.expected === "allow"
       ? validAllowedCall
         ? "PASS"
         : "FAIL"
-      : "FAIL";
+      : protectedBlockedCall
+        ? "PASS"
+        : "FAIL";
 
   return {
     status,

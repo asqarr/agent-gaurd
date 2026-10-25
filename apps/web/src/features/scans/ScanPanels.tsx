@@ -4,8 +4,22 @@ import type { AttackPathResult, Scan, ScanProgress, SecurityDemoProof } from "..
 
 type ScanResult = NonNullable<Scan["results"]>[number];
 
+function wasBlockedSafely(result: ScanResult) {
+  return result.guard?.decision === "BLOCK" && result.guard.execution === "NOT_EXECUTED";
+}
+
 function resultTone(result: ScanResult) {
-  return result.status === "FAIL" ? "danger" : result.status === "ERROR" ? "warning" : "safe";
+  return result.status === "ERROR"
+    ? "warning"
+    : result.status === "FAIL" && !wasBlockedSafely(result)
+      ? "danger"
+      : "safe";
+}
+
+function resultLabel(result: ScanResult) {
+  if (result.status === "ERROR") return "Error";
+  if (wasBlockedSafely(result)) return "Blocked safely";
+  return result.status === "PASS" ? "Passed" : "Finding";
 }
 
 function ThreatReplay({ results }: { results: ScanResult[] }) {
@@ -81,7 +95,7 @@ function ThreatReplay({ results }: { results: ScanResult[] }) {
                 <span>{active.category}</span>
                 <strong>{active.title}</strong>
               </div>
-              <b>{active.status === "PASS" ? "SAFE" : active.status === "FAIL" ? "FINDING" : "ERROR"}</b>
+              <b>{resultLabel(active)}</b>
             </div>
             <div className="threat-replay__stages">
               <div className="threat-replay__stage threat-replay__stage--input">
@@ -104,7 +118,7 @@ function ThreatReplay({ results }: { results: ScanResult[] }) {
               <div className="threat-replay__stage threat-replay__stage--outcome">
                 <span>04 · OUTCOME</span>
                 <strong>{active.guard?.execution ?? "NO EXECUTION"}</strong>
-                <small>{active.status === "PASS" ? "Agent stayed within policy" : active.status === "FAIL" ? "Unsafe behavior detected" : "Scenario needs review"}</small>
+                <small>{wasBlockedSafely(active) ? "Unsafe proposal stopped before execution" : active.status === "PASS" ? "Agent stayed within policy" : active.status === "FAIL" ? "Unsafe behavior reached the decision boundary" : "Scenario needs review"}</small>
               </div>
             </div>
           </div>
@@ -226,6 +240,11 @@ export function ScanEvidencePanel({
           <strong>{formatDuration(scan.durationMs)}</strong>
         </div>
       </div>
+      <div className="scan-evidence__legend" role="note">
+        <span><i className="scan-legend-dot scan-legend-dot--safe" />Passed = expected outcome observed</span>
+        <span><i className="scan-legend-dot scan-legend-dot--blocked" />Blocked safely = proposal stopped before execution</span>
+        <span><i className="scan-legend-dot scan-legend-dot--finding" />Finding = unsafe proposal was not blocked</span>
+      </div>
 
       <AttackPathEvidence paths={scan.attackPaths ?? []} />
 
@@ -262,10 +281,10 @@ export function ScanEvidencePanel({
                   <h4>{result.title}</h4>
                 </div>
                 <span
-                  className={`evidence-status evidence-status--${result.status.toLowerCase()}`}
+                  className={`evidence-status evidence-status--${result.status.toLowerCase()} evidence-status--${resultTone(result)}`}
                 >
                   <i />
-                  {result.status}
+                  {resultLabel(result)}
                 </span>
               </div>
               <div className="evidence-card__grid">
@@ -331,10 +350,12 @@ export function LiveScanPanel({
   const progress = scan.progress ?? [];
   const terminalStatuses = new Set(["passed", "blocked", "failed", "error"]);
   const completedCount = progress.filter((item) => terminalStatuses.has(item.status)).length;
-  const total = progress.length || 6;
+  const total = scan.scenarioCount ?? progress.length;
   const percent = scan.status === "completed"
     ? 100
-    : Math.round((completedCount / total) * 100);
+    : total > 0
+      ? Math.round((completedCount / total) * 100)
+      : 0;
   const current = progress.find((item) => item.status === "running");
   const elapsedMs = scan.durationMs ?? Math.max(
     0,
@@ -376,7 +397,7 @@ export function LiveScanPanel({
       <div className="live-scan-panel__metrics">
         <div>
           <span>Progress</span>
-          <strong>{completedCount}/{total}</strong>
+          <strong>{completedCount}/{total || "—"}</strong>
         </div>
         <div>
           <span>Elapsed</span>

@@ -30,7 +30,7 @@ export type WorkspaceSettings = {
   };
   members: WorkspaceMember[];
   security: {
-    passwordChangedAt: string;
+    passwordChangedAt: string | null;
     sessionDurationDays: number;
     accessTokenDurationDays: number;
     sessionStorage: "httpOnly_cookie" | string;

@@ -1009,7 +1009,7 @@ function WorkspaceView({
                 >
                   {scan.score ?? "—"}
                 </strong>
-                <span className="table-value">{scan.passed}/6</span>
+                <span className="table-value">{scan.passed}/{scanScenarioTotal(scan)}</span>
                 <span className={scan.failed ? "finding-count" : "table-value"}>
                   {scan.failed || "None"}
                 </span>
@@ -1377,6 +1377,29 @@ function WorkspaceView({
   );
 }
 
+function scanScenarioTotal(scan: Scan) {
+  return scan.scenarioCount ?? scan.progress?.length ?? scan.passed + scan.failed;
+}
+
+function mergeScanIntoOverview(current: Overview, scan: Scan): Overview {
+  return {
+    ...current,
+    metrics: {
+      ...current.metrics,
+      securityScore:
+        scan.status === "completed" && scan.score != null
+          ? scan.score
+          : current.metrics.securityScore,
+    },
+    recentScans: [
+      scan,
+      ...current.recentScans
+        .filter((item) => item.id !== scan.id)
+        .slice(0, 5),
+    ],
+  };
+}
+
 function App() {
   const [overview, setOverview] = useState<Overview>(fallbackOverview);
   const [agents, setAgents] = useState<Agent[]>(fallbackAgents);
@@ -1399,15 +1422,22 @@ function App() {
   const [notifications, setNotifications] = useState<Incident[]>([]);
   const [incidentSummary, setIncidentSummary] = useState({ open: 0, unread: 0, critical: 0 });
 
+  async function refreshDashboard() {
+    const { overview: nextOverview, agents: nextAgents } = await getDashboard();
+    setOverview(nextOverview);
+    setAgents(nextAgents);
+    setSelectedAgent((current) =>
+      nextAgents.some((agent) => agent.id === current)
+        ? current
+        : nextAgents[0]?.id ?? "",
+    );
+    setConnected(true);
+    return { overview: nextOverview, agents: nextAgents };
+  }
+
   useEffect(() => {
     if (authState !== "authenticated") return;
-    getDashboard()
-      .then(({ overview: nextOverview, agents: nextAgents }) => {
-        setOverview(nextOverview);
-        setAgents(nextAgents);
-        setSelectedAgent(nextAgents[0]?.id ?? fallbackAgents[0].id);
-        setConnected(true);
-      })
+    refreshDashboard()
       .catch(() => setToast("Demo mode · API is not connected yet"));
   }, [authState]);
 
@@ -1473,30 +1503,9 @@ function App() {
         );
         if (runningScenario) setToast(`Testing ${runningScenario.title}…`);
       });
-      setOverview((current) => ({
-        ...current,
-        metrics: {
-          ...current.metrics,
-          securityScore:
-            scan.status === "completed" && scan.score != null
-              ? scan.score
-              : current.metrics.securityScore,
-        },
-        recentScans: [
-          scan,
-          ...current.recentScans
-            .filter((item) => item.id !== scan.id)
-            .slice(0, 5),
-        ],
-      }));
+      const refreshed = await refreshDashboard().catch(() => null);
+      if (!refreshed) setOverview((current) => mergeScanIntoOverview(current, scan));
       if (scan.status === "completed") {
-        setAgents((current) =>
-          current.map((agent) =>
-            agent.id === selected.id
-              ? { ...agent, score: scan.score, lastScan: scan.createdAt }
-              : agent,
-          ),
-        );
         setToast(`Scan complete · ${scan.score}/100 security score`);
       } else if (scan.status === "failed") {
         setToast(`Scan failed · ${scan.error ?? "worker error"}`);
@@ -1533,22 +1542,13 @@ function App() {
         const runningScenario = nextScan.progress?.find((item) => item.status === "running");
         if (runningScenario) setToast(`Testing ${runningScenario.title}…`);
       });
-      setOverview((current) => ({
-        ...current,
-        metrics: {
-          ...current.metrics,
-          securityScore: scan.status === "completed" && scan.score != null
-            ? scan.score
-            : current.metrics.securityScore,
-        },
-        recentScans: [
-          scan,
-          ...current.recentScans.filter((item) => item.id !== scan.id).slice(0, 5),
-        ],
-      }));
-      setAgents((current) => current.map((agent) => agent.id === result.agent.id
-        ? { ...agent, score: scan.score, lastScan: scan.createdAt }
-        : agent));
+      const refreshed = await refreshDashboard().catch(() => null);
+      if (!refreshed) {
+        setOverview((current) => mergeScanIntoOverview(current, scan));
+        setAgents((current) => current.map((agent) => agent.id === result.agent.id
+          ? { ...agent, score: scan.score, lastScan: scan.createdAt }
+          : agent));
+      }
       setToast(scan.status === "completed"
         ? `Demo complete · ${scan.score}/100 · $100 refund blocked before execution`
         : `Demo scan ${scan.status} · review the evidence panel`);
@@ -1896,21 +1896,21 @@ function App() {
           <MetricCard
             label="Security score"
             value={`${overview.metrics.securityScore}/100`}
-            delta="Live average of completed scans"
+            delta="Expected outcomes across completed scans"
             icon="shield"
             tone="cyan"
           />
           <MetricCard
             label="Protected actions"
             value={overview.metrics.protectedActions}
-            delta="Blocked by active policy"
+            delta="Stopped before tool execution"
             icon="lock"
             tone="violet"
           />
           <MetricCard
             label="Open findings"
             value={overview.metrics.openFindings}
-            delta="From completed scan evidence"
+            delta="Unsafe proposals that were not blocked"
             icon="activity"
             tone="orange"
           />

@@ -7,8 +7,23 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function isProtected(result) {
+  return result.status === "PASS" || (
+    result.guard?.decision === "BLOCK" &&
+    result.guard?.execution === "NOT_EXECUTED"
+  );
+}
+
+function verdictFor(result) {
+  if (result.status === "ERROR") return "ERROR";
+  if (result.guard?.decision === "BLOCK" && result.guard?.execution === "NOT_EXECUTED") {
+    return "BLOCKED SAFELY";
+  }
+  return isProtected(result) ? "PASS" : "FINDING";
+}
+
 function severityFor(result) {
-  if (result.status === "PASS") return "Protected";
+  if (isProtected(result)) return "Protected";
   if (result.category?.toLowerCase().includes("injection")) return "Critical";
   if (result.category?.toLowerCase().includes("authorization")) return "High";
   return result.status === "ERROR" ? "Needs review" : "High";
@@ -20,6 +35,9 @@ function amountFrom(result) {
 }
 
 function businessImpactFor(result, policy) {
+  if (isProtected(result)) {
+    return "The expected control held. The proposal was either compliant or stopped before it could reach a customer executor. Keep the boundary in place and re-test after changes.";
+  }
   const amount = amountFrom(result);
   const currency = policy?.currency ?? "USD";
   if (amount !== null && amount > Number(policy?.maxAmount ?? 50)) {
@@ -31,9 +49,6 @@ function businessImpactFor(result, policy) {
   }
   if (category.includes("authorization") || result.scenarioId === "cross_tenant_access") {
     return "The agent may cross a merchant or role boundary. This can expose another customer’s data and create unauthorized financial or operational actions.";
-  }
-  if (result.status === "PASS") {
-    return "No commercial risk was observed in this control case. Keep the policy and verify it again after agent, tool, or contract changes.";
   }
   if (result.status === "ERROR") {
     return "The control could not reach a trustworthy verdict. Treat the action as unsafe until the endpoint, contract, and execution path are verified.";
@@ -49,7 +64,7 @@ function reproductionFor(result, scan) {
 }
 
 function remediationFor(result, policy) {
-  if (result.status === "PASS") {
+  if (isProtected(result)) {
     return `Keep the current policy boundary at ${policy?.currency ?? "USD"} ${policy?.maxAmount ?? 50}, keep the tool behind Runtime Firewall, and add a regression test for this scenario.`;
   }
   if (result.guard?.decision === "BLOCK") {
@@ -61,8 +76,8 @@ function remediationFor(result, policy) {
 function resultRow(result, { policy, scan }) {
   const reason = result.reasons?.length ? result.reasons.join(" ") : "No additional reason recorded.";
   const callPayload = result.call ? JSON.stringify(result.call, null, 2) : "No tool call was proposed.";
-  return `<article class="finding ${result.status === "PASS" ? "finding--safe" : "finding--risk"}">
-    <div class="finding__top"><span class="pill">${escapeHtml(severityFor(result))}</span><span class="status">${escapeHtml(result.status)}</span></div>
+  return `<article class="finding ${isProtected(result) ? "finding--safe" : "finding--risk"}">
+    <div class="finding__top"><span class="pill">${escapeHtml(severityFor(result))}</span><span class="status">${escapeHtml(verdictFor(result))}</span></div>
     <h3>${escapeHtml(result.title)}</h3>
     <p class="muted">${escapeHtml(result.category)} · scenario <code>${escapeHtml(result.scenarioId)}</code></p>
     <div class="grid"><div><b>Expected</b><span>${escapeHtml(result.expected)}</span></div><div><b>Observed</b><span>${escapeHtml(result.observed || "No tool call")}</span></div><div><b>Tool</b><span>${escapeHtml(result.call?.name || "None")}</span></div><div><b>Execution</b><span>${escapeHtml(result.guard?.execution || "Not executed")}</span></div></div>
@@ -76,7 +91,7 @@ function resultRow(result, { policy, scan }) {
 
 export function renderScanReport({ scan, policy, preview = false }) {
   const results = scan.results ?? [];
-  const findings = results.filter((result) => result.status !== "PASS").length;
+  const findings = results.filter((result) => !isProtected(result)).length;
   const generatedAt = new Date().toISOString();
   const previewNotice = preview
     ? `<div class="notice notice--preview"><b>Quickstart proof report:</b> This is an isolated synthetic run. It proves the pre-execution policy decision and contains no customer data or live side effect.</div>`
