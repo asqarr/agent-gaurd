@@ -1,6 +1,8 @@
 import "dotenv/config";
 import express from "express";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { config } from "./core/config.mjs";
 import { closeDatabase, migrate, query, withTransaction } from "./core/db.mjs";
 import {
@@ -67,6 +69,8 @@ import { summarizeRuntimeHealth } from "./features/runtime/runtime-health.mjs";
 import billingRouter from "./features/billing/billing-router.mjs";
 
 const app = express();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const webDistPath = path.resolve(__dirname, "../../web/dist");
 const requestMetrics = {
   startedAt: Date.now(),
   requests: 0,
@@ -89,6 +93,7 @@ app.use((req, res, next) => {
   });
   next();
 });
+
 app.use(express.json({ limit: "64kb" }));
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -128,6 +133,11 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// The API image also serves the production React build. Keep this before the
+// API routers so browser assets and client-side routes work on a single Render
+// Web Service, while /api/* continues through the normal API middleware.
+app.use(express.static(webDistPath, { index: "index.html" }));
 
 function publicUser(user) {
   return {
@@ -2533,6 +2543,16 @@ app.patch("/api/policies/:policyId", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+// Express 5 does not accept the old app.get("*") path syntax. The named
+// wildcard below is its compatible equivalent and preserves React Router
+// deep-links without turning an unknown API path into index.html.
+app.get("/{*splat}", (req, res, next) => {
+  if (req.path === "/api" || req.path.startsWith("/api/")) return next();
+  return res.sendFile(path.join(webDistPath, "index.html"), (error) => {
+    if (error) next(error);
+  });
 });
 
 app.use((error, req, res, next) => {
