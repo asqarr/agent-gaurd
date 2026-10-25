@@ -18,7 +18,6 @@ import {
   verifyBillingPayment,
 } from "./billing.api";
 import type { DirectBillingCheckout } from "./billing.api";
-import { sendUsdtWithTronLink, shortTronAddress, tronLinkErrorMessage } from "./tronlink";
 import type { Agent, BillingAddon, BillingPayment, BillingPaymentException, BillingPlan, BillingServiceOrder, BillingState, BillingUsageMetrics, SessionUser } from "../../shared/types/api";
 import { Icon } from "../../shared/ui/Icon";
 
@@ -36,6 +35,10 @@ function formatAddonPrice(addon: BillingAddon) {
 function formatDate(value: string | null) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
+}
+
+function shortPaymentValue(value: string) {
+  return value.length > 14 ? `${value.slice(0, 7)}…${value.slice(-5)}` : value;
 }
 
 function formatBytes(value: number) {
@@ -172,12 +175,12 @@ function PaymentSuccessDialog({
         <div className="payment-success-dialog__details">
           <div><span>PLAN</span><strong>{payment.planName}</strong></div>
           <div><span>AMOUNT</span><strong>{payment.amount} USDT</strong></div>
-          <div><span>TRANSACTION</span><strong>{payment.txHash === "confirmed-on-chain" ? "Confirmed on-chain" : shortTronAddress(payment.txHash)}</strong>{payment.txHash === "confirmed-on-chain" ? null : <button type="button" className="text-button" onClick={() => onCopy(payment.txHash, "Transaction hash")}>Copy hash</button>}</div>
+          <div><span>TRANSACTION</span><strong>{payment.txHash === "confirmed-on-chain" ? "Confirmed on-chain" : shortPaymentValue(payment.txHash)}</strong>{payment.txHash === "confirmed-on-chain" ? null : <button type="button" className="text-button" onClick={() => onCopy(payment.txHash, "Transaction hash")}>Copy hash</button>}</div>
         </div>
         <div className="dialog__actions">
           <button type="button" className="button button--primary" onClick={onClose}>Continue to AgentGuard <Icon name="arrow" size={15} /></button>
         </div>
-        <small className="payment-success-dialog__order">Order {shortTronAddress(payment.orderId)}</small>
+        <small className="payment-success-dialog__order">Order {shortPaymentValue(payment.orderId)}</small>
       </div>
     </div>
   );
@@ -203,9 +206,6 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
   const [checkoutMessage, setCheckoutMessage] = useState("");
   const [directCheckout, setDirectCheckout] = useState<DirectBillingCheckout | null>(null);
   const [verificationBusy, setVerificationBusy] = useState(false);
-  const [walletBusy, setWalletBusy] = useState(false);
-  const [connectedWallet, setConnectedWallet] = useState("");
-  const [paymentTxHash, setPaymentTxHash] = useState("");
   const [paymentSuccess, setPaymentSuccess] = useState<{
     planName: string;
     amount: string;
@@ -379,8 +379,6 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
         await load();
       } else {
         setPaymentSuccess(null);
-        setPaymentTxHash("");
-        setConnectedWallet("");
         rememberDirectCheckout(result);
         setDirectCheckout(result);
         setCheckoutMessage(`Send exactly ${result.amountUSDT} USDT on TRC20 to the wallet below, then verify the transaction.`);
@@ -407,8 +405,6 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
     try {
       const result = await createBillingAddonCheckout(addon.id, addon.kind === "security_audit" ? auditAgentId : undefined, serviceAcknowledged[addon.id] === true, addon.priceUsdCents / 100);
       setPaymentSuccess(null);
-      setPaymentTxHash("");
-      setConnectedWallet("");
       rememberDirectCheckout(result);
       setDirectCheckout(result);
       setCheckoutMessage(`Send exactly ${result.amountUSDT} USDT on TRC20 to the wallet below, then verify the transaction.`);
@@ -432,7 +428,7 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
         const planName = checkout.checkout.checkoutType === "plan"
           ? plans.find((plan) => plan.id === checkout.checkout.planId)?.name ?? "your selected plan"
           : "your purchased capacity";
-        const txHash = result.txHash ?? paymentTxHash;
+        const txHash = result.txHash ?? "";
         setCheckoutMessage("Payment confirmed on-chain. Your entitlement is active.");
         setDirectCheckout((current) => current ? { ...current, checkout: { ...current.checkout, status: "completed" } } : current);
         setPaymentSuccess({ planName, amount: checkout.amountUSDT, orderId: currentOrderId, txHash: txHash || "confirmed-on-chain" });
@@ -453,29 +449,6 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
       setCheckoutError(caught instanceof Error ? caught.message : "Payment verification could not be completed.");
     } finally {
       if (!retrying) setVerificationBusy(false);
-    }
-  }
-
-  async function payWithTronLink() {
-    if (!directCheckout || walletBusy || verificationBusy) return;
-    setWalletBusy(true);
-    setCheckoutError("");
-    setCheckoutMessage("Opening TronLink… approve the connection and transaction in your wallet.");
-    try {
-      const result = await sendUsdtWithTronLink({
-        recipient: directCheckout.walletAddress,
-        tokenContract: directCheckout.tokenContract,
-        amountAtomic: directCheckout.amountAtomic,
-      });
-      setConnectedWallet(result.address);
-      setPaymentTxHash(result.txHash);
-      setCheckoutMessage(`Transaction submitted from ${shortTronAddress(result.address)}. Waiting for confirmation…`);
-      void verifyDirectPayment({ orderId: directCheckout.order_id, autoRetry: true });
-    } catch (caught) {
-      setCheckoutError(tronLinkErrorMessage(caught));
-      setCheckoutMessage("");
-    } finally {
-      setWalletBusy(false);
     }
   }
 
@@ -546,14 +519,34 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
       {checkoutError && !directCheckout ? <div className="billing-error" role="alert"><Icon name="activity" size={16} /><span>{checkoutError}</span><button className="button button--subtle" onClick={() => setCheckoutError("")}>Dismiss</button></div> : null}
       {checkoutMessage && !directCheckout ? <div className="billing-success" role="status"><Icon name="shield" size={16} /><span>{checkoutMessage}</span><button className="button button--subtle" onClick={() => setCheckoutMessage("")}>Dismiss</button></div> : null}
       {directCheckout ? <section ref={checkoutPanelRef} className="billing-direct-checkout panel">
-        <div className="billing-direct-checkout__heading"><div><span className="eyebrow eyebrow--cyan">DIRECT P2P SETTLEMENT</span><h3>Pay directly to the AgentGuard wallet.</h3><p>No hosted invoice or intermediary is involved. Only send USDT on the TRC20 network.</p></div><Icon name="wallet" size={20} /></div>
+        <div className="billing-direct-checkout__heading"><div><span className="eyebrow eyebrow--cyan">DIRECT P2P SETTLEMENT</span><h3>Pay from any wallet on TRC20.</h3><p>Send the exact USDT amount directly to the AgentGuard wallet. No hosted invoice or wallet extension is required.</p></div><Icon name="wallet" size={20} /></div>
         <div className="billing-direct-checkout__grid">
           <div><span>Amount</span><strong>{directCheckout.amountUSDT} USDT</strong><small>Exact amount · {directCheckout.decimals} decimals</small></div>
           <div><span>Network</span><strong>{directCheckout.network}</strong><small>Contract: {directCheckout.tokenContract}</small></div>
           <div className="billing-direct-checkout__address"><span>Recipient wallet</span><strong>{directCheckout.walletAddress}</strong><button type="button" className="text-button" onClick={() => void copyPaymentValue(directCheckout.walletAddress, "Wallet address")}>Copy address</button></div>
           <div><span>Order ID</span><strong>{directCheckout.order_id}</strong><button type="button" className="text-button" onClick={() => void copyPaymentValue(directCheckout.order_id, "Order ID")}>Copy order ID</button></div>
         </div>
-        <div className="billing-direct-checkout__footer"><div className="billing-direct-checkout__footer-copy"><small>Expires {formatDate(directCheckout.expiresAt)} · Blockchain confirmation can take a few minutes.</small>{connectedWallet ? <span className="billing-direct-checkout__wallet-status">TronLink connected: {shortTronAddress(connectedWallet)}</span> : null}{checkoutMessage ? <span className="billing-direct-checkout__message" role="status">{checkoutMessage}</span> : null}{checkoutError ? <span className="billing-direct-checkout__error" role="alert">{checkoutError}</span> : null}</div><div className="billing-direct-checkout__actions"><button type="button" className="button button--primary" disabled={walletBusy || verificationBusy || directCheckout.checkout.status === "completed"} onClick={() => void payWithTronLink()}>{walletBusy ? "Waiting for TronLink…" : verificationBusy ? "Confirming payment…" : directCheckout.checkout.status === "completed" ? "Payment verified" : "Pay with TronLink"}<Icon name="wallet" size={15} /></button><button type="button" className="button button--subtle" disabled={walletBusy || verificationBusy || directCheckout.checkout.status === "completed"} onClick={() => void verifyDirectPayment({ autoRetry: true })}>{verificationBusy ? "Checking…" : "I already paid"}</button></div></div>
+        <div className="billing-direct-checkout__footer">
+          <div className="billing-direct-checkout__footer-copy">
+            <small>Expires {formatDate(directCheckout.expiresAt)} · Blockchain confirmation can take a few minutes.</small>
+            {checkoutMessage ? <span className="billing-direct-checkout__message" role="status">{checkoutMessage}</span> : null}
+            {checkoutError ? <span className="billing-direct-checkout__error" role="alert">{checkoutError}</span> : null}
+          </div>
+          <div className="billing-direct-checkout__footer-right">
+            <div className="billing-direct-checkout__actions">
+              <button
+                type="button"
+                className="button button--primary"
+                disabled={verificationBusy || directCheckout.checkout.status === "completed"}
+                onClick={() => void verifyDirectPayment({ autoRetry: true })}
+              >
+                {verificationBusy ? "Checking blockchain…" : directCheckout.checkout.status === "completed" ? "Payment verified" : "I already paid"}
+                <Icon name="shield" size={15} />
+              </button>
+            </div>
+            <p className="billing-direct-checkout__wallet-help">You can send the exact USDT amount from ANY crypto wallet (Trust Wallet, Binance, Metamask, etc.) using the TRC20 network. Once sent, click 'I already paid' to verify your transaction via blockchain.</p>
+          </div>
+        </div>
       </section> : null}
       <div className="workspace-view__heading billing-page__heading">
         <div><span className="eyebrow eyebrow--cyan">PLANS & USAGE</span><h2>Protect more agents as your risk grows.</h2><p>Start with a controlled allowance, then scale by verified usage. Security controls never weaken on a cheaper plan.</p></div>
@@ -566,7 +559,7 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
         <div className="billing-exception-center__heading"><div><span className="eyebrow eyebrow--cyan">PAYMENT EXCEPTION CENTER</span><h3>A transfer needs a safe decision.</h3><p>AgentGuard found a confirmed USDT transfer that could not be applied automatically. No entitlement changes are made until the payment is matched or explicitly resolved.</p></div><Icon name="activity" size={18} /></div>
         <div className="billing-exception-list">{paymentExceptions.filter((exception) => !["resolved", "refunded", "ignored"].includes(exception.status)).map((exception) => <article className="billing-exception" key={exception.id}>
           <div className="billing-exception__top"><div><span className="eyebrow">{exceptionReasonLabel(exception.reason)}</span><h4>{exception.amountUsdt ?? "—"} USDT <small>· {exception.network}</small></h4></div><b className={`billing-exception__status billing-exception__status--${exception.status}`}>{paymentStatusLabel(exception.status)}</b></div>
-          <div className="billing-exception__meta"><span>Detected<strong>{formatDate(exception.transferTimestamp ?? exception.detectedAt)}</strong></span><span>Transaction<strong>{shortTronAddress(exception.txHash)}</strong></span><span>Order<strong>{exception.checkoutSessionId ? shortTronAddress(exception.checkoutSessionId) : "No matching order"}</strong></span></div>
+          <div className="billing-exception__meta"><span>Detected<strong>{formatDate(exception.transferTimestamp ?? exception.detectedAt)}</strong></span><span>Transaction<strong>{shortPaymentValue(exception.txHash)}</strong></span><span>Order<strong>{exception.checkoutSessionId ? shortPaymentValue(exception.checkoutSessionId) : "No matching order"}</strong></span></div>
           <button type="button" className="text-button" onClick={() => void copyPaymentValue(exception.txHash, "Transaction hash")}>Copy transaction hash</button>
           {canManageBilling ? <div className="billing-exception__actions"><label><span>Checkout ID for manual match</span><input value={exceptionCheckoutIds[exception.id] ?? exception.checkoutSessionId ?? ""} onChange={(event) => setExceptionCheckoutIds((current) => ({ ...current, [exception.id]: event.target.value }))} placeholder="checkout-…" /></label><div><button type="button" className="button button--primary" disabled={exceptionBusy !== null} onClick={() => void attachException(exception)}>{exceptionBusy === `${exception.id}:attach` ? "Attaching…" : "Attach & activate"}</button><button type="button" className="button button--subtle" disabled={exceptionBusy !== null} onClick={() => void resolveException(exception, "refund_required")}>{exceptionBusy === `${exception.id}:refund_required` ? "Saving…" : "Mark refund required"}</button><button type="button" className="button button--subtle" disabled={exceptionBusy !== null} onClick={() => void resolveException(exception, "ignored")}>Ignore</button></div></div> : <small className="billing-exception__note">Workspace admins are reviewing this transfer. If you sent the payment, keep the transaction hash available for support.</small>}
         </article>)}</div>
@@ -574,7 +567,7 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
 
       {paymentHistory.length ? <section className="billing-payment-history panel">
         <div className="billing-payment-history__heading"><div><span className="eyebrow">PAYMENT HISTORY</span><h3>Every settlement stays traceable.</h3><p>Only confirmed blockchain payments appear here as completed billing events.</p></div><span className="billing-payment-history__count">{paymentHistory.length} record{paymentHistory.length === 1 ? "" : "s"}</span></div>
-        <div className="billing-payment-history__list">{paymentHistory.slice(0, 8).map((payment) => <article className="billing-payment-history__row" key={payment.id}><div><strong>{payment.planName ?? payment.addonName ?? "AgentGuard purchase"}</strong><small>{formatDate(payment.paidAt ?? payment.createdAt)} · {payment.network ?? payment.currency}</small></div><span>{payment.amount} {payment.currency}</span><b className={`billing-payment-history__status billing-payment-history__status--${payment.status}`}>{paymentStatusLabel(payment.status)}</b>{payment.txHash ? <button type="button" className="text-button" onClick={() => void copyPaymentValue(payment.txHash ?? "", "Transaction hash")}>{shortTronAddress(payment.txHash)}</button> : null}</article>)}</div>
+        <div className="billing-payment-history__list">{paymentHistory.slice(0, 8).map((payment) => <article className="billing-payment-history__row" key={payment.id}><div><strong>{payment.planName ?? payment.addonName ?? "AgentGuard purchase"}</strong><small>{formatDate(payment.paidAt ?? payment.createdAt)} · {payment.network ?? payment.currency}</small></div><span>{payment.amount} {payment.currency}</span><b className={`billing-payment-history__status billing-payment-history__status--${payment.status}`}>{paymentStatusLabel(payment.status)}</b>{payment.txHash ? <button type="button" className="text-button" onClick={() => void copyPaymentValue(payment.txHash ?? "", "Transaction hash")}>{shortPaymentValue(payment.txHash)}</button> : null}</article>)}</div>
       </section> : null}
 
       {hasPendingDowngrade ? <div className="billing-pending-change panel"><div><span className="eyebrow">SCHEDULED CHANGE</span><strong>Downgrade to {pendingPlanName}</strong><small>Effective {formatDate(billing.subscription.pendingPlanEffectiveAt)}. Current access remains unchanged until then.</small></div><button className="button button--subtle" disabled={busyKey !== null} onClick={() => void cancelDowngrade()}>{busyKey === "cancel-downgrade" ? "Cancelling…" : "Keep current plan"}</button></div> : null}

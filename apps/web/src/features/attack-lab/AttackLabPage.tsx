@@ -122,6 +122,10 @@ export function AttackLabPage() {
             Explore how AgentGuard evaluates a sensitive tool call, binds approval
             to its exact arguments, and rejects a replay—before an executor can act.
           </p>
+          <p className="attack-lab__hero-note">
+            This public lab intentionally contains 3 focused synthetic challenges.
+            The authenticated dashboard unlocks the full 12-scenario suite by plan.
+          </p>
           <div className="attack-lab__trust">
             <span><i /> Real AgentGuard policy code</span>
             <span><i /> Synthetic storefront data</span>

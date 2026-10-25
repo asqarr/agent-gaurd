@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#080c18" />
     <link rel="stylesheet" href="/marketing.css" />
+    <link rel="stylesheet" href="/marketing-overrides.css" />
     <link rel="stylesheet" href="/growth-analytics.css" />
     <meta
       name="description"
@@ -67,7 +68,7 @@
           the complete path from untrusted input to proposed action.
         </p>
         <div class="mk-article__meta">
-          Updated October 2026 <span>·</span> 8 min read
+          Updated October 2026 <span>·</span> 5 min read
         </div>
       </div>
       <div class="mk-article__layout">
@@ -77,6 +78,12 @@
             security boundary is crossed when it proposes a refund, changes an
             order, creates a ticket, reads another tenant’s data, or moves
             sensitive context into a side effect.
+          </p>
+          <p>
+            This matters most for agencies shipping Shopify and WooCommerce
+            support agents. A realistic failure is an untrusted order note that
+            convinces the agent to propose a $120 refund, apply an unauthorized
+            discount, or change an order outside the customer’s permissions.
           </p>
           <h2>What should an agent security test cover?</h2>
           <p>
@@ -128,12 +135,23 @@
           </div>
           <h2>A production-ready workflow</h2>
           <p>
-            Connect a safe endpoint, run a professional adversarial suite,
-            review the Security Blueprint, and apply only the controls you
-            approve. Keep the business policy explicit, keep unknown tools
-            blocked, and rerun the suite whenever prompts, tools, models, or
-            permissions change.
+            Connect a safe Staging or mock endpoint, run a professional
+            adversarial suite, review the Security Blueprint, and apply only
+            the controls you approve. AgentGuard sends synthetic JSON requests
+            and evaluates returned <code>tool_calls</code>; it does not execute
+            those calls itself. Your endpoint may still execute internally, so
+            Production scans are blocked by default unless the agent is routed
+            through the Runtime Firewall.
           </p>
+          <div class="mk-callout">
+            <strong>What the endpoint must return</strong
+            ><span
+              >A JSON response with assistant text and optional
+              <code>tool_calls</code>. If the response reports that a tool was
+              executed, AgentGuard marks the scan unsafe and tells you to stop
+              production scanning until the executor is isolated.</span
+            >
+          </div>
           <h2>Agent security testing checklist</h2>
           <ul class="mk-checklist">
             <li>Every tool has an explicit allowlist entry.</li>
@@ -150,6 +168,15 @@
           >
         </article>
         <aside class="mk-article__aside">
+          <div class="mk-aside-card">
+            <span class="mk-kicker">FOR AGENCIES</span
+            ><strong>Shopify &amp; WooCommerce support agents.</strong>
+            <p>
+              Validate refund, order, ticket, and tenant boundaries before a
+              client’s storefront traffic reaches the executor.
+            </p>
+            <a href="/app.html">Open the dashboard →</a>
+          </div>
           <div class="mk-aside-card">
             <span class="mk-kicker">AGENTGUARD METHOD</span
             ><strong>Challenge → Evidence → Blueprint → Protect</strong>

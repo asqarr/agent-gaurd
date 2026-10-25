@@ -1308,8 +1308,11 @@ function WorkspaceView({
           <h3>Connect an endpoint</h3>
           <p>
             Give AgentGuard a safe staging endpoint that can receive synthetic
-            requests. Production credentials are encrypted at rest and never
-            returned to the dashboard.
+            requests. The scanner reads assistant text and proposed tool calls;
+            it does not execute them. Your endpoint could still execute
+            internally, so Production scans are blocked by default. Use a mock
+            or Staging executor, or route the agent through Runtime Firewall.
+            Credentials are encrypted at rest and never returned to the dashboard.
           </p>
           <div className="code-block">
             <span>POST</span> https://your-agent.example/chat

@@ -5,10 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#080c18" />
     <link rel="stylesheet" href="/marketing.css" />
+    <link rel="stylesheet" href="/marketing-overrides.css" />
     <link rel="stylesheet" href="/growth-analytics.css" />
     <meta
       name="description"
-      content="AgentGuard is an AI agent security testing platform for prompt injection testing, tool-call abuse detection, red-team scenarios, and runtime protection."
+      content="AgentGuard helps Shopify and WooCommerce agencies test support agents against prompt injection, refund abuse, unsafe order changes, and tool-call bypasses."
     />
     <meta name="robots" content="index,follow,max-image-preview:large" />
     <link rel="canonical" href="__SITE_URL__/" />
@@ -20,7 +21,7 @@
     />
     <meta
       property="og:description"
-      content="Test AI agents against prompt injection, tool abuse, data exfiltration, and unsafe side effects before production traffic reaches them."
+      content="Security testing for Shopify and WooCommerce support agents before production traffic reaches refunds, orders, tickets, and customer data."
     />
     <meta property="og:url" content="__SITE_URL__/" />
     <meta property="og:image" content="__SITE_URL__/og-agentguard.svg" />
@@ -60,7 +61,7 @@
             "name": "AgentGuard",
             "applicationCategory": "SecurityApplication",
             "operatingSystem": "Web",
-            "description": "AI agent security testing, red teaming, policy enforcement, and runtime protection.",
+            "description": "Security testing and runtime protection for Shopify and WooCommerce support agents.",
             "url": "__SITE_URL__/",
             "offers": {
               "@type": "Offer",
@@ -90,7 +91,15 @@
                 "name": "Does AgentGuard test a real customer endpoint?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Yes. AgentGuard sends isolated synthetic scenarios to a configured HTTP endpoint, records the proposed tool calls, and evaluates them before a side effect can execute."
+                  "text": "AgentGuard can send isolated synthetic scenarios to a configured HTTP endpoint, record proposed tool calls, and evaluate them. It does not execute those tools itself; Production scans are blocked by default because an endpoint may execute internally."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Why does the public lab show 3 challenges while the dashboard says 12?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "The public Attack Lab is a no-login synthetic proof with three focused challenges. The authenticated dashboard unlocks the full 12-scenario red-team suite according to plan."
                 }
               },
               {
@@ -117,6 +126,7 @@
       <nav aria-label="Main navigation">
         <a href="#how-it-works">How it works</a
         ><a href="#coverage">Security coverage</a
+        ><a href="#trust">Data &amp; safety</a
         ><a href="/attack-lab.html">Attack Lab</a
         ><a href="/agent-security-testing.html">Agent testing guide</a>
       </nav>
@@ -130,9 +140,12 @@
           <span class="mk-kicker"><i></i> AI AGENT SECURITY TESTING</span>
           <h1>Test your agent before it can <em>cause damage.</em></h1>
           <p class="mk-lead">
-            AgentGuard pressure-tests AI agents against prompt injection, tool
-            abuse, data exfiltration, and unsafe side effects—then helps you
-            protect them in one approval flow.
+            Built for agencies shipping Shopify and WooCommerce support agents.
+            AgentGuard pressure-tests prompt injection, tool abuse, data
+            exfiltration, and unsafe side effects—then helps you protect the
+            agent in one approval flow. Example: an untrusted order note tries
+            to turn a normal support request into a $120 refund or an
+            unauthorized order change.
           </p>
           <div class="mk-hero__actions">
           <a class="mk-button mk-button--primary" href="/attack-lab.html"
@@ -145,7 +158,7 @@
           </div>
           <div class="mk-trust-line">
             <span><i></i>No credit card</span
-            ><span><i></i>12 adversarial scenarios</span
+            ><span><i></i>3 public challenges · 12 in dashboard</span
             ><span><i></i>Fail-closed protection</span>
           </div>
         </div>
@@ -167,12 +180,12 @@
       </section>
       <section class="mk-proof" aria-label="AgentGuard capabilities">
         <div>
-          <strong>01</strong><span>CONNECT</span
-          ><small>Bring your real endpoint</small>
+          <strong>03</strong><span>PUBLIC LAB</span
+          ><small>Three synthetic challenges, no login</small>
         </div>
         <div>
-          <strong>12</strong><span>SCENARIOS</span
-          ><small>Professional adversarial coverage</small>
+          <strong>12</strong><span>DASHBOARD SUITE</span
+          ><small>Full suite on Builder and higher plans</small>
         </div>
         <div>
           <strong>01</strong><span>BLUEPRINT</span
@@ -276,6 +289,71 @@
           </article>
         </div>
       </section>
+      <section class="mk-section mk-section--surface" id="trust">
+        <div class="mk-section__heading">
+          <span class="mk-kicker">TRUST &amp; DATA HANDLING</span>
+          <h2>Evidence you can inspect.<br /><em>Boundaries you can explain.</em></h2>
+          <p>
+            AgentGuard is designed for agencies that need a reproducible answer
+            before a storefront agent touches a refund, cancellation, ticket,
+            or customer record.
+          </p>
+        </div>
+        <div class="mk-trust-grid">
+          <article>
+            <span class="mk-card-icon">01</span>
+            <h3>What is stored</h3>
+            <p>
+              Scan metadata, scenario outcomes, proposed tool names and
+              arguments, policy decisions, safety signals, timestamps, and
+              audit events. Evidence is workspace-scoped and exportable on
+              eligible plans.
+            </p>
+          </article>
+          <article>
+            <span class="mk-card-icon">02</span>
+            <h3>What is protected</h3>
+            <p>
+              Endpoint URLs and API keys are encrypted at rest; the dashboard
+              receives only the endpoint host. AgentGuard sends synthetic test
+              inputs and does not request customer data for the public lab.
+            </p>
+          </article>
+          <article>
+            <span class="mk-card-icon">03</span>
+            <h3>Retention you can see</h3>
+            <p>
+              Evidence retention follows the plan: 7 days on Explorer, 30 on
+              Builder, 90 on Pro, and 180 on Agency. An automated worker purges
+              expired scan evidence; deleting a workspace removes its records.
+            </p>
+          </article>
+          <article>
+            <span class="mk-card-icon">04</span>
+            <h3>Endpoint contract</h3>
+            <p>
+              Connect a JSON HTTP endpoint that accepts POST requests and an
+              optional Bearer API key, then returns <code>assistant_text</code>
+              or <code>text</code> plus optional <code>tool_calls</code>.
+              Production requires HTTPS; use a mock or staging executor for
+              scans.
+            </p>
+          </article>
+        </div>
+        <div class="mk-report-example" aria-label="Example AgentGuard evidence report">
+          <div>
+            <span class="mk-kicker">SAMPLE REPORT</span>
+            <h3>Refund policy bypass</h3>
+            <p>One finding, with the evidence needed to reproduce and fix it.</p>
+          </div>
+          <dl>
+            <div><dt>Expected</dt><dd>BLOCK &middot; refund exceeds USD 50</dd></div>
+            <div><dt>Observed</dt><dd><code>issue_refund(order_id, amount: 120)</code></dd></div>
+            <div><dt>Execution</dt><dd>NOT_EXECUTED &middot; executor not reached</dd></div>
+            <div><dt>Next step</dt><dd>Route the call through a fail-closed Runtime Firewall.</dd></div>
+          </dl>
+        </div>
+      </section>
       <section class="mk-section mk-faq" id="faq">
         <div class="mk-section__heading">
           <span class="mk-kicker">COMMON QUESTIONS</span>
@@ -299,9 +377,22 @@
               Does AgentGuard test a real customer endpoint?<b>+</b>
             </summary>
             <p>
-              Yes. It sends isolated synthetic scenarios to your configured HTTP
-              endpoint and records the agent response without executing
-              customer-side effects through the test itself.
+              It can call the configured HTTP endpoint with isolated synthetic
+              scenarios and record the response and proposed <code>tool_calls</code>.
+              AgentGuard does not execute those tools itself, but an endpoint
+              can still execute internally; that is why Production scans are
+              blocked by default and a mock or Staging executor is required.
+            </p>
+          </details>
+          <details>
+            <summary>
+              Why does the public lab show 3 challenges while the dashboard says 12?<b>+</b>
+            </summary>
+            <p>
+              The public Attack Lab is a no-login, synthetic proof with three
+              focused challenges: policy limits, approval tampering, and replay
+              defense. The authenticated dashboard unlocks the full 12-scenario
+              red-team suite according to the selected plan.
             </p>
           </details>
           <details>
@@ -322,8 +413,8 @@
           Find the dangerous behavior<br /><em>before your customers do.</em>
         </h2>
         <p>
-          Connect one endpoint. Run the security suite. Leave with a protection
-          plan you can explain.
+          Connect a safe Staging endpoint. Run the security suite. Leave with a
+          protection plan and evidence you can explain to a customer.
         </p>
         <a class="mk-button mk-button--primary" href="/attack-lab.html"
           >Run a safe security challenge <b>→</b></a
