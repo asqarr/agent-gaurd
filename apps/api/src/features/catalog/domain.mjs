@@ -297,6 +297,10 @@ export function evaluateAttackPath(path, results = []) {
   });
   const vulnerable = steps.some((step) => ["FAIL", "ERROR"].includes(step.status));
   const incomplete = steps.some((step) => !["PASS", "FAIL", "ERROR"].includes(step.status));
+  const missingScenarioIds = steps
+    .filter((step) => step.status === "PENDING")
+    .map((step) => step.scenarioId);
+  const evaluatedSteps = steps.length - missingScenarioIds.length;
   return {
     id: path.id,
     title: path.title,
@@ -305,6 +309,16 @@ export function evaluateAttackPath(path, results = []) {
     objective: path.objective,
     scenarioIds: path.scenarioIds,
     status: vulnerable ? "vulnerable" : incomplete ? "incomplete" : "protected",
+    coverage: {
+      evaluated: evaluatedSteps,
+      required: steps.length,
+      missingScenarioIds,
+    },
+    statusReason: vulnerable
+      ? "At least one evaluated step produced a finding."
+      : incomplete
+        ? "This chain was not fully included in the selected scan; incomplete is not a pass."
+        : "Every step in this chain was evaluated and protected.",
     steps,
   };
 }

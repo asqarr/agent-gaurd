@@ -168,8 +168,17 @@ export const config = Object.freeze({
   usageCostModel: Object.freeze({
     cpuUsdPerHour: nonNegativeDecimal("USAGE_CPU_USD_PER_HOUR", 0.12, { max: 1000 }),
     storageUsdPerGbMonth: nonNegativeDecimal("USAGE_STORAGE_USD_PER_GB_MONTH", 0.1, { max: 1000 }),
+    // The fallback rates keep local development deterministic, but they are not
+    // a production cost claim. The API exposes this distinction to the UI.
+    configuredEstimate: Boolean(
+      String(process.env.USAGE_CPU_USD_PER_HOUR ?? "").trim() &&
+      String(process.env.USAGE_STORAGE_USD_PER_GB_MONTH ?? "").trim(),
+    ),
     snapshotRetentionDays: positiveInteger("USAGE_SNAPSHOT_RETENTION_DAYS", 180, { min: 7, max: 3650 }),
   }),
+  // Keep this false during migration. Enable it only after every owner/admin
+  // has enrolled TOTP from Settings, otherwise production logins are blocked.
+  requireAdminMfa: process.env.REQUIRE_ADMIN_MFA === "true",
   sentinelWorkerIntervalMs: positiveInteger("SENTINEL_WORKER_INTERVAL_MS", 60000, {
     min: 5000,
     max: 3600000,

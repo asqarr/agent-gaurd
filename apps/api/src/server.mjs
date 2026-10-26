@@ -444,6 +444,12 @@ app.post("/api/auth/login", authRateLimit, async (req, res, next) => {
         code: "EMAIL_NOT_VERIFIED",
       });
     }
+    if (config.requireAdminMfa && ["owner", "admin"].includes(user.role) && !user.mfa_enabled) {
+      return res.status(403).json({
+        error: "Administrator TOTP MFA must be enabled before this account can sign in.",
+        code: "MFA_SETUP_REQUIRED",
+      });
+    }
     if (user.mfa_enabled) {
       return res.json({
         mfaRequired: true,

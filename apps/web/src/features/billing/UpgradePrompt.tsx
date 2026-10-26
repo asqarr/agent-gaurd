@@ -100,6 +100,27 @@ function getCopy(request: UpgradeRequest) {
   };
 }
 
+function planIdForName(name: string) {
+  return ({ Explorer: "free", Builder: "builder", Pro: "team", Agency: "agency" } as Record<string, string>)[name] ?? "builder";
+}
+
+function upgradeBenefits(requiredPlan: string) {
+  const benefits = [
+    "Block unsafe storefront tool calls before the customer executor runs",
+    "Keep reproducible evidence and remediation guidance for every finding",
+  ];
+  if (["Builder", "Pro", "Agency"].includes(requiredPlan)) {
+    benefits.unshift("Evaluate the complete 12-scenario red-team suite");
+  }
+  if (["Pro", "Agency"].includes(requiredPlan)) {
+    benefits.push("Monitor drift and operational incidents across the agent fleet");
+  }
+  if (requiredPlan === "Agency") {
+    benefits.push("Run a multi-client program with white-label evidence");
+  }
+  return benefits;
+}
+
 export function UpgradePrompt({
   request,
   onClose,
@@ -107,7 +128,7 @@ export function UpgradePrompt({
 }: {
   request: UpgradeRequest;
   onClose: () => void;
-  onUpgrade: () => void;
+  onUpgrade: (planId?: string) => void;
 }) {
   const titleId = useId();
   const descriptionId = useId();
@@ -150,10 +171,14 @@ export function UpgradePrompt({
           <Icon name="shield" size={15} />
           <span>{hasAddonPath ? "Upgrade for a larger recurring allowance, or purchase extra capacity from Plans." : "No data was lost and no protected action was executed. Review Plans to unlock this control."}</span>
         </div>
+        <div className="upgrade-prompt__proof">
+          <span>WHAT YOU BUY</span>
+          <ul>{upgradeBenefits(copy.requiredPlan).map((benefit) => <li key={benefit}>{benefit}</li>)}</ul>
+        </div>
         <div className="dialog__actions">
           <button type="button" className="button button--subtle" onClick={onClose}>Not now</button>
-          <button type="button" className="button button--primary" onClick={onUpgrade}>
-            View plans &amp; pay with USDT <Icon name="arrow" size={15} />
+          <button type="button" className="button button--primary" onClick={() => onUpgrade(planIdForName(copy.requiredPlan))}>
+            Unlock {copy.requiredPlan} with USDT <Icon name="arrow" size={15} />
           </button>
         </div>
       </section>

@@ -53,6 +53,14 @@ function formatUsd(value: number) {
   return `$${value.toFixed(4)}`;
 }
 
+function formatEstimatedUsd(value: number, status: BillingUsageMetrics["costModel"]["status"], measurement = true) {
+  if (status === "not_configured") return "Not configured";
+  if (status === "no_usage" || !measurement) return "No measured usage";
+  if (status === "awaiting_measurement") return "Awaiting sample";
+  if (value > 0 && value < 0.0001) return "<$0.0001";
+  return formatUsd(value);
+}
+
 function formatDuration(value: number) {
   if (value < 1000) return `${Math.round(value)}ms`;
   return `${(value / 1000).toFixed(1)}s`;
@@ -219,6 +227,7 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
     orderId: string;
     txHash: string;
   } | null>(null);
+  const [highlightedPlanId, setHighlightedPlanId] = useState<string | null>(null);
   const checkoutPanelRef = useRef<HTMLElement>(null);
   const verificationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -245,7 +254,8 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
       ?? "your selected plan";
   }
 
-  function focusPlanOptions() {
+  function focusPlanOptions(planId?: string) {
+    if (planId) setHighlightedPlanId(planId);
     document.getElementById("billing-plans")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -287,6 +297,15 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(() => {
+    if (!plans.length) return;
+    const requested = new URLSearchParams(window.location.search).get("plan")?.trim().toLowerCase();
+    const normalized = ({ explorer: "free", free: "free", builder: "builder", pro: "team", team: "team", agency: "agency" } as Record<string, string>)[requested ?? ""];
+    if (!normalized || !plans.some((plan) => plan.id === normalized)) return;
+    setHighlightedPlanId(normalized);
+    window.setTimeout(() => document.getElementById(`billing-plan-${normalized}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
+  }, [plans]);
 
   useEffect(() => {
     let cancelled = false;
@@ -547,6 +566,10 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
       {checkoutError && !directCheckout ? <div className="billing-error" role="alert"><Icon name="activity" size={16} /><span>{checkoutError}</span><button className="button button--subtle" onClick={() => setCheckoutError("")}>Dismiss</button></div> : null}
       {checkoutMessage && !directCheckout ? <div className="billing-success" role="status"><Icon name="shield" size={16} /><span>{checkoutMessage}</span><button className="button button--subtle" onClick={() => setCheckoutMessage("")}>Dismiss</button></div> : null}
       {billing.subscription.lastExpiryFallback ? <div className="billing-plan-fallback" role="status"><Icon name="clock" size={17} /><div><strong>{billing.subscription.lastExpiryFallback.fromPlanName} period ended — Explorer access is active.</strong><span>Your workspace data is safe, but paid controls are paused. Renew or upgrade to restore the full security suite.</span></div><a className="button button--primary" href="#billing-plans">Renew or upgrade <Icon name="arrow" size={14} /></a></div> : null}
+      {billing.plan.id === "free" ? <section className="billing-conversion-banner panel">
+        <div><span className="eyebrow eyebrow--cyan">EXPLORER PROVES THE RISK</span><h3>Builder protects the launch.</h3><p>Free scans show where a storefront Agent is unsafe. Builder adds the complete 12-scenario suite, pre-execution Runtime Firewall, and customer-ready evidence so an unsafe refund or order change never reaches the executor.</p></div>
+        <button type="button" className="button button--primary" onClick={() => focusPlanOptions("builder")}>See Builder protection <Icon name="arrow" size={14} /></button>
+      </section> : null}
       {directCheckout ? <section ref={checkoutPanelRef} className="billing-direct-checkout panel">
         <div className="billing-direct-checkout__heading"><div><span className="eyebrow eyebrow--cyan">DIRECT P2P SETTLEMENT</span><h3>Pay from any wallet on TRC20.</h3><p>Send the exact USDT amount directly to the AgentGuard wallet. No hosted invoice or wallet extension is required.</p></div><Icon name="wallet" size={20} /></div>
         <div className="billing-direct-checkout__grid">
@@ -583,7 +606,7 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
         <div className="billing-rail-badge"><Icon name="wallet" size={17} /><div><span>PAYMENT RAIL</span><strong>USDT on TRON</strong></div><small>Manual renewal only</small></div>
       </div>
 
-      {billing.usage.alerts.map((alert) => <div className={`billing-usage-alert billing-usage-alert--${alert.severity}`} key={`${alert.resource}-${alert.threshold}`}><Icon name={alert.severity === "critical" ? "activity" : "shield"} size={15} /><span>{alert.message}</span>{alert.addonRemaining > 0 ? <small>{alert.addonRemaining.toLocaleString()} extra available</small> : null}{alert.severity !== "notice" ? <button type="button" className="text-button" onClick={focusPlanOptions}>Review plans <Icon name="arrow" size={12} /></button> : null}</div>)}
+      {billing.usage.alerts.map((alert) => <div className={`billing-usage-alert billing-usage-alert--${alert.severity}`} key={`${alert.resource}-${alert.threshold}`}><Icon name={alert.severity === "critical" ? "activity" : "shield"} size={15} /><span>{alert.message}</span>{alert.addonRemaining > 0 ? <small>{alert.addonRemaining.toLocaleString()} extra available</small> : null}{alert.severity !== "notice" ? <button type="button" className="text-button" onClick={() => focusPlanOptions()}>Review plans <Icon name="arrow" size={12} /></button> : null}</div>)}
 
       {paymentExceptions.some((exception) => !["resolved", "refunded", "ignored"].includes(exception.status)) ? <section className="billing-exception-center panel">
         <div className="billing-exception-center__heading"><div><span className="eyebrow eyebrow--cyan">PAYMENT EXCEPTION CENTER</span><h3>A transfer needs a safe decision.</h3><p>AgentGuard found a confirmed USDT transfer that could not be applied automatically. No entitlement changes are made until the payment is matched or explicitly resolved.</p></div><Icon name="activity" size={18} /></div>
@@ -628,16 +651,16 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
             <div><span>Scan credits measured</span><strong>{usageMetrics.measurement.scanCredits.toLocaleString()}</strong><small>{usageMetrics.measurement.operations.toLocaleString()} total operations</small></div>
             <div><span>Runtime decisions</span><strong>{usageMetrics.measurement.runtimeDecisions.toLocaleString()}</strong><small>{usageMetrics.measurement.averageDurationMs.toFixed(0)}ms average</small></div>
             <div><span>CPU time</span><strong>{usageMetrics.measurement.cpuAvailable ? `${usageMetrics.measurement.cpuMs.toLocaleString()}ms` : "Awaiting sample"}</strong><small>{usageMetrics.measurement.cpuAvailable ? `${usageMetrics.measurement.maxDurationMs.toLocaleString()}ms max operation` : "Runtime does not expose CPU counters yet"}</small></div>
-            <div><span>Estimated compute</span><strong>{usageMetrics.costModel.cpuMeasurementAvailable ? formatUsd(usageMetrics.estimatedCostUsd.compute) : "Awaiting sample"}</strong><small>Configured CPU rate</small></div>
-            <div><span>Per 1K Scan Credits</span><strong>{usageMetrics.costModel.cpuMeasurementAvailable ? formatUsd(usageMetrics.unitEconomics.per1000ScanCredits.estimatedComputeUsd) : "Awaiting sample"}</strong><small>{usageMetrics.unitEconomics.per1000ScanCredits.sampleUnits.toLocaleString()} credits in sample</small></div>
-            <div><span>Per 10K Runtime Decisions</span><strong>{usageMetrics.costModel.cpuMeasurementAvailable ? formatUsd(usageMetrics.unitEconomics.per10000RuntimeDecisions.estimatedComputeUsd) : "Awaiting sample"}</strong><small>{usageMetrics.unitEconomics.per10000RuntimeDecisions.sampleUnits.toLocaleString()} decisions in sample</small></div>
+            <div><span>Estimated compute</span><strong>{formatEstimatedUsd(usageMetrics.estimatedCostUsd.compute, usageMetrics.costModel.status, usageMetrics.costModel.cpuMeasurementAvailable)}</strong><small>{usageMetrics.costModel.configuredEstimate ? "Configured infrastructure rate · estimate only" : "Set USAGE_CPU_USD_PER_HOUR and storage rate before using this figure"}</small></div>
+            <div><span>Per 1K Scan Credits</span><strong>{formatEstimatedUsd(usageMetrics.unitEconomics.per1000ScanCredits.estimatedComputeUsd, usageMetrics.costModel.status, usageMetrics.costModel.cpuMeasurementAvailable && usageMetrics.unitEconomics.per1000ScanCredits.sampleUnits > 0)}</strong><small>{usageMetrics.unitEconomics.per1000ScanCredits.sampleUnits.toLocaleString()} credits in sample</small></div>
+            <div><span>Per 10K Runtime Decisions</span><strong>{formatEstimatedUsd(usageMetrics.unitEconomics.per10000RuntimeDecisions.estimatedComputeUsd, usageMetrics.costModel.status, usageMetrics.costModel.cpuMeasurementAvailable && usageMetrics.unitEconomics.per10000RuntimeDecisions.sampleUnits > 0)}</strong><small>{usageMetrics.unitEconomics.per10000RuntimeDecisions.sampleUnits.toLocaleString()} decisions in sample</small></div>
           </div>
-          <div className="billing-ops-card__footer"><span>Storage footprint</span><strong>{usageMetrics.storage ? formatBytes(usageMetrics.storage.logicalBytes) : "Awaiting snapshot"}</strong><small>{usageMetrics.storage ? `${formatUsd(usageMetrics.estimatedCostUsd.storageMonthlyRunRate)} monthly run-rate · ${formatDate(usageMetrics.storage.capturedAt)}` : "The retention worker will capture the first snapshot."}</small></div>
+          <div className="billing-ops-card__footer"><span>Storage footprint</span><strong>{usageMetrics.storage ? formatBytes(usageMetrics.storage.logicalBytes) : "Awaiting snapshot"}</strong><small>{usageMetrics.storage ? `${formatEstimatedUsd(usageMetrics.estimatedCostUsd.storageMonthlyRunRate, usageMetrics.costModel.status)} monthly run-rate · ${formatDate(usageMetrics.storage.capturedAt)}` : "The retention worker will capture the first snapshot."}</small></div>
         </section>
         <section className="billing-ops-card panel">
           <div className="billing-ops-card__heading"><div><span className="eyebrow">RETENTION CONTROL</span><h3>Evidence is deleted, not hidden.</h3><p>Retention runs are recorded and storage is measured after cleanup.</p></div><Icon name="clock" size={18} /></div>
           {usageMetrics.retention ? <div className="billing-retention-status"><span className="billing-status-dot billing-status-dot--ok" /><div><strong>Last run {formatDate(usageMetrics.retention.lastRunAt)}</strong><small>{usageMetrics.retention.deletedScans.toLocaleString()} scans deleted from {usageMetrics.retention.candidates.toLocaleString()} candidates in {usageMetrics.retention.durationMs}ms.</small></div><b>{usageMetrics.retention.status}</b></div> : <div className="billing-retention-status billing-retention-status--empty"><span className="billing-status-dot" /><div><strong>No retention run recorded yet.</strong><small>The worker runs automatically and records every cleanup pass.</small></div></div>}
-          <div className="billing-ops-card__footer"><span>Estimated current footprint cost</span><strong>{formatUsd(usageMetrics.estimatedCostUsd.total)}</strong><small>Compute for this period + monthly storage run-rate. Estimates use configured infrastructure rates.</small></div>
+          <div className="billing-ops-card__footer"><span>Estimated current footprint cost</span><strong>{formatEstimatedUsd(usageMetrics.estimatedCostUsd.total, usageMetrics.costModel.status)}</strong><small>{usageMetrics.costModel.configuredEstimate ? "Compute for this period + monthly storage run-rate. This is an estimate, not an invoice." : "No production rates are configured, so this value is intentionally unavailable."}</small></div>
         </section>
       </div> : null}
 
@@ -665,9 +688,11 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
           const downgrade = !current && planRank(plan.id) < planRank(billing.plan.id) && billing.entitlements.active;
           const expiredPlan = billing.subscription.lastExpiryFallback?.fromPlanId === plan.id;
           const recommended = plan.id === "team";
-          return <article className={`billing-plan-card ${current ? "billing-plan-card--current" : ""} ${recommended ? "billing-plan-card--recommended" : ""}`} key={plan.id}>
+           const selectedFromMarketing = highlightedPlanId === plan.id;
+           return <article id={`billing-plan-${plan.id}`} className={`billing-plan-card ${current ? "billing-plan-card--current" : ""} ${recommended ? "billing-plan-card--recommended" : ""} ${selectedFromMarketing ? "billing-plan-card--selected" : ""}`} key={plan.id}>
             {current ? <span className="billing-plan-card__current">CURRENT PLAN</span> : null}
             {recommended && !current ? <span className="billing-plan-card__recommended">BEST VALUE</span> : null}
+             {selectedFromMarketing ? <span className="billing-plan-card__selected">SELECTED FROM PRICING</span> : null}
             <div className="billing-plan-card__top"><div><span className="eyebrow">{plan.name}</span><h3>{formatPrice(plan)}</h3></div><Icon name={plan.runtimeFirewall ? "shield" : "lock"} size={19} /></div>
             <p>{plan.description}</p>
             <div className="billing-plan-card__limits"><span>{plan.maxAgents} agent{plan.maxAgents === 1 ? "" : "s"}</span><span>{plan.monthlyScanCredits.toLocaleString()} {plan.scanCreditMode === "one_time" ? "one-time credits" : "credits / month"}</span><span>{plan.runtimeDecisionsIncluded.toLocaleString()} runtime decisions</span><span>{scanCapacityLabel(plan, billing.usage.fullScanCredits)}</span><span>{plan.scenarioLimit}/12 scenarios</span><span>{plan.seatLimit} seat{plan.seatLimit === 1 ? "" : "s"}</span><span>{plan.historyDays} days evidence</span></div>

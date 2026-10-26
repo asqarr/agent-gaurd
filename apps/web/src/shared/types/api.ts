@@ -420,6 +420,7 @@ export type BillingUsageMetrics = {
     storageUsdPerGbMonth: number;
     configuredEstimate: boolean;
     cpuMeasurementAvailable: boolean;
+    status: "not_configured" | "no_usage" | "awaiting_measurement" | "estimated";
   };
   estimatedCostUsd: {
     compute: number;
@@ -717,6 +718,12 @@ export type AttackPath = {
 
 export type AttackPathResult = AttackPath & {
   status: "protected" | "vulnerable" | "incomplete";
+  coverage?: {
+    evaluated: number;
+    required: number;
+    missingScenarioIds: string[];
+  };
+  statusReason?: string;
   steps: Array<{
     scenarioId: string;
     title: string;
@@ -785,6 +792,11 @@ export type Overview = {
     protectedActions: number;
     openFindings: number;
     scansThisMonth: number;
+    scoreBasis?: "latest_completed_scan_per_agent" | string;
+    testedScenarios?: number;
+    requiredScenarios?: number;
+    fullSuiteAgents?: number;
+    scenarioCoveragePercent?: number;
   };
   posture: {
     scenarioPassRate: number;

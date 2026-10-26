@@ -157,11 +157,11 @@ function ScoreRing({ score }: { score: number }) {
   );
 }
 
-function SecurityOrb({ score }: { score: number }) {
+function SecurityOrb({ score, coverage }: { score: number; coverage: number }) {
   return (
     <div
       className="orb-scene"
-      aria-label={`Security score ${score} out of 100`}
+      aria-label={`Control score ${score} out of 100 with ${coverage}% scenario coverage`}
     >
       <div className="orb-halo orb-halo--one" />
       <div className="orb-halo orb-halo--two" />
@@ -181,8 +181,8 @@ function SecurityOrb({ score }: { score: number }) {
         <Icon name="shield" size={13} />
       </div>
       <div className="orb-caption">
-        <span>Security posture</span>
-        <strong>{score}% healthy</strong>
+        <span>Latest control score</span>
+        <strong>{score}/100 · {coverage}% covered</strong>
       </div>
     </div>
   );
@@ -330,6 +330,10 @@ function WorkspaceView({
   const [runtimeError, setRuntimeError] = useState("");
   const selected =
     agents.find((agent) => agent.id === selectedAgent) ?? agents[0];
+  const selectedLatestScan = selected
+    ? overview.recentScans.find((scan) => scan.agentId === selected.id && scan.status === "completed")
+    : undefined;
+  const selectedDisplayScore = selectedLatestScan?.score ?? selected?.score ?? null;
 
   useEffect(() => {
     setPolicyName(overview.policy.name);
@@ -838,8 +842,8 @@ function WorkspaceView({
                   {agent.environment} · {agent.provider}
                 </span>
                 <div className="fleet-card__score">
-                  <b>{agent.score ?? "—"}</b>
-                  <small>/100 security score</small>
+                  <b>{overview.recentScans.find((scan) => scan.agentId === agent.id && scan.status === "completed")?.score ?? agent.score ?? "—"}</b>
+                  <small>/100 latest control score</small>
                 </div>
                 <div className="tool-chips">
                   {agent.tools.map((tool) => (
@@ -856,7 +860,7 @@ function WorkspaceView({
                 <h3>{selected.name}</h3>
                 <p>{selected.description}</p>
                 <div className="inspector-score">
-                  <ScoreRing score={selected.score ?? 0} />
+                    <ScoreRing score={selectedDisplayScore ?? 0} />
                   <div>
                     <span>Current posture</span>
                     <strong>
@@ -872,6 +876,7 @@ function WorkspaceView({
                         ? formatRelativeDate(selected.lastScan)
                         : "Never"}
                     </small>
+                    {selectedLatestScan?.scenarioCount != null ? <small>Control coverage {selectedLatestScan.scenarioCount}/12 scenarios</small> : null}
                   </div>
                 </div>
                 <div className="inspector-row">
@@ -1386,6 +1391,13 @@ function scanScenarioTotal(scan: Scan) {
   return scan.scenarioCount ?? scan.progress?.length ?? scan.passed + scan.failed;
 }
 
+function requestedPlanId() {
+  if (typeof window === "undefined") return null;
+  const value = new URLSearchParams(window.location.search).get("plan")?.trim().toLowerCase();
+  if (!value) return null;
+  return ({ explorer: "free", free: "free", builder: "builder", pro: "team", team: "team", agency: "agency" } as Record<string, string>)[value] ?? null;
+}
+
 function mergeScanIntoOverview(current: Overview, scan: Scan): Overview {
   return {
     ...current,
@@ -1395,6 +1407,13 @@ function mergeScanIntoOverview(current: Overview, scan: Scan): Overview {
         scan.status === "completed" && scan.score != null
           ? scan.score
           : current.metrics.securityScore,
+      testedScenarios: scan.status === "completed"
+        ? scanScenarioTotal(scan)
+        : current.metrics.testedScenarios,
+      requiredScenarios: 12,
+      scenarioCoveragePercent: scan.status === "completed"
+        ? Math.round((scanScenarioTotal(scan) / 12) * 100)
+        : current.metrics.scenarioCoveragePercent,
     },
     recentScans: [
       scan,
@@ -1408,7 +1427,7 @@ function mergeScanIntoOverview(current: Overview, scan: Scan): Overview {
 function App() {
   const [overview, setOverview] = useState<Overview>(fallbackOverview);
   const [agents, setAgents] = useState<Agent[]>(fallbackAgents);
-  const [active, setActive] = useState("Overview");
+  const [active, setActive] = useState(() => requestedPlanId() ? "Plans" : "Overview");
   const [selectedAgent, setSelectedAgent] = useState(fallbackAgents[0].id);
   const [scanning, setScanning] = useState(false);
   const [quickStartBusy, setQuickStartBusy] = useState(false);
@@ -1628,8 +1647,13 @@ function App() {
     setSearchOpen(false);
   }
 
-  function openUpgradePlans() {
+  function openUpgradePlans(planId?: string) {
     setUpgradeRequest(null);
+    if (planId) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("plan", planId);
+      window.history.replaceState({}, "", url);
+    }
     setActive("Plans");
     setSearchOpen(false);
     setNotificationsOpen(false);
@@ -1937,9 +1961,9 @@ function App() {
 
         <section className="metrics-grid">
           <MetricCard
-            label="Security score"
+            label="Control score"
             value={`${overview.metrics.securityScore}/100`}
-            delta="Expected outcomes across completed scans"
+            delta={`${overview.metrics.scenarioCoveragePercent ?? 0}% scenario coverage · latest scan per agent`}
             icon="shield"
             tone="cyan"
           />
@@ -1998,7 +2022,7 @@ function App() {
                 </button>
               </div>
               <div className="hero-panel__body">
-                <SecurityOrb score={overview.metrics.securityScore} />
+                <SecurityOrb score={overview.metrics.securityScore} coverage={overview.metrics.scenarioCoveragePercent ?? 0} />
                 <div className="posture-breakdown">
                   <div className="posture-row">
                     <span>
@@ -2039,6 +2063,12 @@ function App() {
                         {overview.posture.blockedLast7Days} unauthorized actions
                       </strong>{" "}
                       in the last 7 days.
+                    </span>
+                  </div>
+                  <div className="posture-note posture-note--warning">
+                    <Icon name="activity" size={15} />
+                    <span>
+                      The control score is not a full security certification. Latest evidence covers {overview.metrics.testedScenarios ?? 0}/{Math.max(12, overview.metrics.requiredScenarios ?? 0)} scenario slots.
                     </span>
                   </div>
                 </div>

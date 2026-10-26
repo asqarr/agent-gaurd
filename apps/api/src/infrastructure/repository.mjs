@@ -504,6 +504,14 @@ export async function getUsageEconomics(workspaceId) {
   const scanCpuMs = Number(row.scan_cpu_us ?? 0) / 1000;
   const runtimeCpuMs = Number(row.runtime_cpu_us ?? 0) / 1000;
   const cpuMeasurementAvailable = Number(row.operations ?? 0) === 0 || Number(row.cpu_us ?? 0) > 0;
+  const hasMeasuredUsage = Number(row.operations ?? 0) > 0 || logicalBytes > 0;
+  const costStatus = !config.usageCostModel.configuredEstimate
+    ? "not_configured"
+    : !hasMeasuredUsage
+      ? "no_usage"
+      : !cpuMeasurementAvailable
+        ? "awaiting_measurement"
+        : "estimated";
   return {
     period: {
       start: billing.usage.periodStart,
@@ -548,8 +556,9 @@ export async function getUsageEconomics(workspaceId) {
     costModel: {
       cpuUsdPerHour: config.usageCostModel.cpuUsdPerHour,
       storageUsdPerGbMonth: config.usageCostModel.storageUsdPerGbMonth,
-      configuredEstimate: true,
+      configuredEstimate: config.usageCostModel.configuredEstimate,
       cpuMeasurementAvailable,
+      status: costStatus,
     },
     estimatedCostUsd: {
       compute: roundUsd(computeUsd),
@@ -3797,17 +3806,32 @@ export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds =
 export async function overview(workspaceId) {
   const [metrics, recent] = await Promise.all([
     query(
-      `SELECT COALESCE(ROUND(AVG(score))::int, 0) AS security_score,
-           COALESCE(SUM(failed) FILTER (WHERE status='completed'), 0)::int AS open_findings,
-           COALESCE(SUM(blocked) FILTER (WHERE status='completed'), 0)::int AS protected_actions,
-           COALESCE(SUM(passed) FILTER (WHERE status='completed'), 0)::int AS passed_scenarios,
-           COALESCE(SUM(passed + failed) FILTER (WHERE status='completed'), 0)::int AS total_scenarios,
-           COUNT(*) FILTER (WHERE status='completed' AND created_at >= DATE_TRUNC('month', NOW()))::int AS scans_this_month,
-           COUNT(DISTINCT agent_id) FILTER (WHERE status='completed')::int AS agents_scanned,
-           (SELECT COUNT(*)::int FROM agents WHERE workspace_id=$1) AS total_agents,
-           COALESCE(SUM(blocked) FILTER (WHERE status='completed' AND created_at >= NOW() - INTERVAL '7 days'), 0)::int AS blocked_last_7_days
-           FROM scans WHERE workspace_id=$1`,
-      [workspaceId],
+      `WITH latest_completed AS (
+             SELECT DISTINCT ON (agent_id)
+               agent_id, score, failed, passed, blocked,
+               COALESCE(NULLIF(jsonb_array_length(scenario_ids), 0), passed + failed) AS scenario_count
+             FROM scans
+             WHERE workspace_id=$1 AND status='completed'
+             ORDER BY agent_id, created_at DESC
+           )
+           SELECT COALESCE(ROUND(AVG(score))::int, 0) AS security_score,
+             COALESCE(SUM(failed), 0)::int AS open_findings,
+             COALESCE(SUM(blocked), 0)::int AS protected_actions,
+             COALESCE(SUM(passed), 0)::int AS passed_scenarios,
+             COALESCE(SUM(scenario_count), 0)::int AS total_scenarios,
+             COALESCE(SUM(scenario_count), 0)::int AS tested_scenarios,
+             COALESCE(COUNT(*) FILTER (WHERE scenario_count >= $2), 0)::int AS full_suite_agents,
+              (SELECT COUNT(*)::int
+               FROM scans
+               WHERE workspace_id=$1 AND status='completed' AND created_at >= DATE_TRUNC('month', NOW())) AS scans_this_month,
+             COUNT(*)::int AS agents_scanned,
+             (SELECT COUNT(*)::int FROM agents WHERE workspace_id=$1) AS total_agents,
+              (SELECT COALESCE(SUM(blocked), 0)::int
+               FROM scans
+               WHERE workspace_id=$1 AND status='completed' AND created_at >= NOW() - INTERVAL '7 days') AS blocked_last_7_days
+           FROM latest_completed
+            `,
+       [workspaceId, scenarios.length],
     ),
     listScans(workspaceId, 6),
   ]);
@@ -3826,6 +3850,13 @@ export async function overview(workspaceId) {
       protectedActions: row.protected_actions,
       openFindings: row.open_findings,
       scansThisMonth: row.scans_this_month,
+      scoreBasis: "latest_completed_scan_per_agent",
+      testedScenarios: Number(row.tested_scenarios ?? 0),
+      requiredScenarios: Number(row.agents_scanned ?? 0) * scenarios.length,
+      fullSuiteAgents: Number(row.full_suite_agents ?? 0),
+      scenarioCoveragePercent: Number(row.agents_scanned ?? 0) > 0
+        ? Math.round((Number(row.tested_scenarios ?? 0) / (Number(row.agents_scanned ?? 0) * scenarios.length)) * 100)
+        : 0,
     },
     posture: {
       scenarioPassRate,

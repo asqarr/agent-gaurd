@@ -167,14 +167,16 @@ function RemediationCard({
 
 function AttackPathEvidence({ paths }: { paths: AttackPathResult[] }) {
   if (!paths.length) return null;
+  const protectedCount = paths.filter((path) => path.status === "protected").length;
   return (
     <div className="scan-attack-paths">
-      <div className="scan-attack-paths__heading"><span className="eyebrow eyebrow--cyan">CHAIN VERIFICATION</span><span>{paths.filter((path) => path.status === "protected").length}/{paths.length} protected</span></div>
+      <div className="scan-attack-paths__heading"><span className="eyebrow eyebrow--cyan">CHAIN VERIFICATION</span><span>{protectedCount}/{paths.length} protected</span></div>
       <div className="scan-attack-paths__grid">
         {paths.map((path) => (
           <div className={`scan-attack-path scan-attack-path--${path.status}`} key={path.id}>
-            <div><strong>{path.title}</strong><span>{path.status}</span></div>
-            <small>{path.steps.filter((step) => step.status === "PASS").length}/{path.steps.length} steps passed</small>
+            <div><strong>{path.title}</strong><span>{path.status === "incomplete" ? "INCOMPLETE" : path.status.toUpperCase()}</span></div>
+            <small>{path.steps.filter((step) => step.status === "PASS").length}/{path.steps.length} steps passed · {path.coverage?.evaluated ?? path.steps.filter((step) => step.status !== "PENDING").length}/{path.coverage?.required ?? path.steps.length} evaluated</small>
+            {path.status === "incomplete" ? <p>This chain is only partially covered by the selected plan or scan. It is not evidence that the agent passed.</p> : null}
           </div>
         ))}
       </div>
@@ -192,6 +194,8 @@ export function ScanEvidencePanel({
   onRetest?: (scenarioId: string) => void;
 }) {
   const results = scan.results ?? [];
+  const testedScenarioCount = scan.scenarioCount ?? results.length;
+  const fullSuite = testedScenarioCount >= 12;
   const statusLabel =
     scan.status === "completed"
       ? "Evidence persisted"
@@ -269,7 +273,12 @@ export function ScanEvidencePanel({
           <span>Duration</span>
           <strong>{formatDuration(scan.durationMs)}</strong>
         </div>
+        <div>
+          <span>Coverage</span>
+          <strong>{testedScenarioCount}<small>/12</small></strong>
+        </div>
       </div>
+      <div className="scan-evidence__score-note" role="note"><Icon name="activity" size={13} /><span>This is a control score for the selected evidence, not a guarantee of complete agent security. {fullSuite ? "The full 12-scenario suite was evaluated." : `Only ${testedScenarioCount}/12 scenarios were evaluated; advanced chains may remain incomplete.`}</span></div>
       <div className="scan-evidence__legend" role="note">
         <span><i className="scan-legend-dot scan-legend-dot--safe" />Passed = expected outcome observed</span>
         <span><i className="scan-legend-dot scan-legend-dot--blocked" />Blocked safely = proposal stopped before execution</span>

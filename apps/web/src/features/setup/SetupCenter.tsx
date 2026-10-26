@@ -16,6 +16,8 @@ type SetupStep = {
   destination: string;
 };
 
+const FULL_SCENARIO_COUNT = 12;
+
 function buildSteps(
   agent: Agent | undefined,
   agents: Agent[],
@@ -31,13 +33,16 @@ function buildSteps(
   const assessed = Boolean(
     agent?.score != null || agent?.lastScan || scansForAgent.length,
   );
-  const latestScan = scansForAgent[0];
+  const latestScan = scansForAgent.find((scan) => scan.status === "completed") ?? scansForAgent[0];
+  const latestScore = latestScan?.score ?? agent?.score;
+  const latestScenarioCount = latestScan?.scenarioCount ?? latestScan?.results?.length ?? null;
+  const limitedCoverage = Boolean(latestScan && latestScenarioCount != null && latestScenarioCount < FULL_SCENARIO_COUNT);
   const needsReview = Boolean(
     assessed &&
-    ((agent?.score ?? latestScan?.score ?? 100) < 85 ||
+    ((latestScore != null && latestScore < 85) ||
       (latestScan?.failed ?? 0) > 0),
   );
-  const reviewed = assessed && !needsReview;
+  const reviewed = assessed && !needsReview && !limitedCoverage;
   const protectedAgent = Boolean(agent?.runtimeEnabled);
   const enforcementVerified = protectedAgent && verificationCurrent && verification?.status === "passed";
   const monitored = protectedAgent && Boolean(agent?.runtimeLastEventAt);
@@ -70,13 +75,15 @@ function buildSteps(
       label: "Review the blueprint",
       detail: needsReview
         ? "Findings need your attention"
+        : limitedCoverage
+          ? `Control score is based on ${latestScenarioCount}/${FULL_SCENARIO_COUNT} scenarios; run the full suite before calling the agent fully assessed`
         : assessed
           ? "No open findings on the selected agent"
           : "See what the assessment discovered",
       done: reviewed,
       icon: needsReview ? "activity" : "library",
-      action: needsReview ? "Review findings" : "Open blueprint",
-      destination: needsReview ? "Scans" : "Autopilot",
+      action: needsReview ? "Review findings" : limitedCoverage ? "Review coverage" : "Open blueprint",
+      destination: needsReview || limitedCoverage ? "Scans" : "Autopilot",
     },
     {
       id: "protect",
