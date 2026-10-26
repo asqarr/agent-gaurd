@@ -602,6 +602,12 @@ export type ScanProgress = {
   status: "queued" | "running" | "passed" | "blocked" | "failed" | "error";
   observed?: string | null;
   guard?: { decision: string; execution: string | null } | null;
+  verdict?: "PROTECTED" | "VULNERABLE" | "INCONCLUSIVE" | string | null;
+  agentBehavior?: "REFUSED" | "PROPOSED" | string | null;
+  executionSafety?: "safe" | "unknown" | "unsafe" | string | null;
+  executionMode?: string | null;
+  source?: string | null;
+  requestId?: string | null;
   reasons: string[];
   call?: ScanToolCall | null;
   error?: string | null;
@@ -612,10 +618,10 @@ export type ScanProgress = {
 
 export type ScanRemediation = {
   version: string;
-  status: "protected" | "open";
+  status: "protected" | "open" | "inconclusive";
   severity: "none" | "medium" | "high" | "critical";
   priority: "none" | "P0" | "P1" | "P2";
-  confidence: "high" | "medium";
+  confidence: "high" | "medium" | "low";
   title: string;
   scenarioId: string;
   summary: string;
@@ -653,15 +659,28 @@ export type Scan = {
   failed: number;
   blocked: number;
   simulated: number;
+  inconclusive?: number;
+  refused?: number;
+  proposed?: number;
   durationMs: number | null;
   createdAt: string;
   startedAt?: string | null;
   finishedAt?: string | null;
   trigger: string;
-  executionMode?: "simulation" | string;
+  executionMode?: "simulation" | "local_simulation" | "safe_demo_simulation" | "customer_endpoint_simulation" | "mixed" | string;
   safetyStatus?: "safe" | "unknown_endpoint" | "unsafe" | string;
   safetyWarning?: string | null;
   contractVersion?: number;
+  policyVersion?: number;
+  policySnapshot?: {
+    policy?: Record<string, unknown>;
+    effective?: Record<string, unknown>;
+    contract?: Record<string, unknown> | null;
+    capturedAt?: string;
+  } | null;
+  catalogVersion?: string;
+  promptVersion?: string;
+  verdict?: "pending" | "PROTECTED" | "VULNERABLE" | "INCONCLUSIVE" | string;
   scenarioCount?: number;
   error?: string | null;
   progress?: ScanProgress[];
@@ -672,6 +691,14 @@ export type Scan = {
     expected: string;
     observed: string;
     status: "PASS" | "FAIL" | "ERROR";
+    verdict?: "PROTECTED" | "VULNERABLE" | "INCONCLUSIVE" | string;
+    agentBehavior?: "REFUSED" | "PROPOSED" | string | null;
+    executionSafety?: "safe" | "unknown" | "unsafe" | string | null;
+    executionMode?: string | null;
+    safetyWarning?: string | null;
+    requestId?: string | null;
+    attempt?: number;
+    durationMs?: number | null;
     guard: { decision: string; execution: string } | null;
     reasons: string[];
     call?: ScanToolCall | null;
@@ -791,6 +818,8 @@ export type Overview = {
     securityScore: number;
     protectedActions: number;
     openFindings: number;
+    inconclusiveScenarios?: number;
+    untrustedAgents?: number;
     scansThisMonth: number;
     scoreBasis?: "latest_completed_scan_per_agent" | string;
     testedScenarios?: number;
@@ -811,6 +840,7 @@ export type Overview = {
     maxAgeDays: number;
     currency: string;
     enforcement?: string;
+    version?: number;
   };
 };
 

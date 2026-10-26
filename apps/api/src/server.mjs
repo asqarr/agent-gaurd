@@ -2372,16 +2372,18 @@ app.patch("/api/policies/:policyId", async (req, res, next) => {
       !name.trim() ||
       !Number.isFinite(amount) ||
       amount <= 0 ||
+      amount > 1000000 ||
       !Number.isInteger(ageDays) ||
       ageDays <= 0 ||
+      ageDays > 36500 ||
       typeof currency !== "string" ||
-      !/^[A-Z]{3}$/.test(currency)
+      !/^[A-Z]{3}$/.test(currency.trim().toUpperCase())
     ) {
       return res
         .status(400)
         .json({
           error:
-            "Policy name, positive amount, positive whole-day window, and 3-letter currency are required.",
+            "Policy name, amount between 0 and 1,000,000, whole-day window up to 36,500 days, and 3-letter currency are required.",
         });
     }
     const updated = await repository.updatePolicy({
@@ -2390,7 +2392,8 @@ app.patch("/api/policies/:policyId", async (req, res, next) => {
       name: name.trim(),
       maxAmount: amount,
       maxAgeDays: ageDays,
-      currency,
+      currency: currency.trim().toUpperCase(),
+      changedBy: req.auth.userId,
     });
     await recordAudit(req, {
       action: "policy.updated",

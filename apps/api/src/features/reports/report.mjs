@@ -11,13 +11,20 @@ function escapeHtml(value) {
 }
 
 function isProtected(result) {
+  if (result?.verdict) return result.verdict === "PROTECTED";
   return result.status === "PASS" || (
     result.guard?.decision === "BLOCK" &&
     result.guard?.execution === "NOT_EXECUTED"
   );
 }
 
+function isInconclusive(result) {
+  return result?.verdict === "INCONCLUSIVE" || result?.status === "ERROR";
+}
+
 function verdictFor(result) {
+  if (result.verdict === "INCONCLUSIVE") return "INCONCLUSIVE";
+  if (result.verdict === "VULNERABLE") return "VULNERABLE";
   if (result.status === "ERROR") return "ERROR";
   if (result.guard?.decision === "BLOCK" && result.guard?.execution === "NOT_EXECUTED") {
     return "BLOCKED SAFELY";
@@ -27,6 +34,7 @@ function verdictFor(result) {
 
 function severityFor(result) {
   if (isProtected(result)) return "Protected";
+  if (isInconclusive(result)) return "Needs review";
   if (result.category?.toLowerCase().includes("injection")) return "Critical";
   if (result.category?.toLowerCase().includes("authorization")) return "High";
   return result.status === "ERROR" ? "Needs review" : "High";
@@ -97,7 +105,8 @@ function resultRow(result, { policy, scan }) {
 
 export function renderScanReport({ scan, policy, preview = false }) {
   const results = scan.results ?? [];
-  const findings = results.filter((result) => !isProtected(result)).length;
+  const findings = results.filter((result) => result.verdict === "VULNERABLE" || (!result.verdict && result.status === "FAIL" && !isProtected(result))).length;
+  const inconclusive = results.filter(isInconclusive).length;
   const testedScenarioCount = Number(scan.scenarioCount ?? results.length);
   const requiredScenarioCount = scenarios.length;
   const coverageNotice = testedScenarioCount < requiredScenarioCount
@@ -113,8 +122,8 @@ export function renderScanReport({ scan, policy, preview = false }) {
 :root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;color:#e8f2f4;background:#071016}*{box-sizing:border-box}body{margin:0;padding:40px;background:linear-gradient(145deg,#071016,#0b1720);line-height:1.5}.report{max-width:1080px;margin:auto}.brand{letter-spacing:.18em;color:#64ead9;font-size:12px;font-weight:700}.header{display:flex;justify-content:space-between;gap:24px;align-items:end;border-bottom:1px solid #28404b;padding-bottom:26px}.header h1{font-size:36px;margin:8px 0 4px}.muted{color:#8ea5ae}.summary{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:24px 0}.metric,.finding{background:#0d1b25;border:1px solid #213a46;border-radius:14px;padding:18px}.metric b,.grid b{display:block;color:#8ea5ae;font-size:11px;text-transform:uppercase;letter-spacing:.1em}.metric strong{display:block;font-size:26px;margin-top:7px;color:#64ead9}.notice{padding:14px 16px;border:1px solid #8c6b31;border-radius:12px;background:#241f12;color:#f4d38a;margin:18px 0}.notice--preview{border-color:#2f7771;background:#0c292e;color:#9fe8df}.finding{margin:14px 0}.finding--risk{border-color:#674043}.finding--safe{border-color:#225a58}.finding__top{display:flex;justify-content:space-between}.pill,.status{font-size:11px;text-transform:uppercase;letter-spacing:.08em}.pill{color:#f3c873}.status{color:#64ead9}.finding h3{margin:12px 0 0;font-size:20px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}.grid span{display:block;margin-top:5px;color:#d3e0e3;word-break:break-word}.section{border-top:1px solid #1d3540;padding-top:12px;margin-top:12px}.section b{font-size:12px;color:#cde9e8}.section p{margin:5px 0;color:#a8bdc4}.section--impact{border-top-color:#6d4d36}.section--impact b{color:#f3c873}.section--acceptance{border-top-color:#225a58}.section pre{margin:9px 0 0;padding:12px;overflow:auto;border:1px solid #203944;border-radius:8px;color:#b9e9e2;background:#07141b;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}code{color:#64ead9}@media(max-width:760px){body{padding:18px}.header{display:block}.summary,.grid{grid-template-columns:repeat(2,1fr)}}@media print{body{background:#fff;color:#111;padding:0}.metric,.finding{background:#fff;border-color:#bbb}.muted,.section p{color:#444}.notice{color:#624d1b;background:#fff8df}}
 </style></head><body><main class="report">
 <div class="brand">AGENTGUARD · SECURITY EVIDENCE</div><header class="header"><div><h1>${escapeHtml(scan.agentName || scan.agentId)}</h1><div class="muted">Scan ${escapeHtml(scan.id)} · ${escapeHtml(scan.trigger)} · generated ${escapeHtml(generatedAt)}</div></div><div class="muted">Contract v${escapeHtml(scan.contractVersion || 0)}</div></header>
-<section class="summary"><div class="metric"><b>Control score</b><strong>${escapeHtml(scan.score ?? "—")}/100</strong></div><div class="metric"><b>Coverage</b><strong>${escapeHtml(testedScenarioCount)}/${escapeHtml(requiredScenarioCount)}</strong></div><div class="metric"><b>Protected</b><strong>${escapeHtml(scan.passed ?? 0)}</strong></div><div class="metric"><b>Findings</b><strong>${escapeHtml(findings)}</strong></div><div class="metric"><b>Safety</b><strong>${escapeHtml(scan.safetyStatus || "safe")}</strong></div></section>
-<div class="metric"><b>Enforced policy</b><span>${escapeHtml(policy?.name || "Workspace policy")} · refund ceiling ${escapeHtml(policy?.currency || "USD")} ${escapeHtml(policy?.maxAmount ?? "—")} · order window ${escapeHtml(policy?.maxAgeDays ?? "—")} days · blocked calls are not forwarded to execution.</span></div>
+<section class="summary"><div class="metric"><b>Control score</b><strong>${escapeHtml(scan.score ?? "—")}${scan.score == null ? "" : "/100"}</strong></div><div class="metric"><b>Coverage</b><strong>${escapeHtml(testedScenarioCount)}/${escapeHtml(requiredScenarioCount)}</strong></div><div class="metric"><b>Protected</b><strong>${escapeHtml(scan.passed ?? 0)}</strong></div><div class="metric"><b>Vulnerable</b><strong>${escapeHtml(findings)}</strong></div><div class="metric"><b>Inconclusive</b><strong>${escapeHtml(inconclusive)}</strong></div></section>
+<div class="metric"><b>Effective policy snapshot</b><span>${escapeHtml(policy?.name || "Workspace policy")} · v${escapeHtml(scan.policyVersion ?? "—")} · refund ceiling ${escapeHtml(policy?.currency || "USD")} ${escapeHtml(policy?.maxAmount ?? "—")} · order window ${escapeHtml(policy?.maxAgeDays ?? "—")} days · blocked calls are not forwarded to execution.</span></div>
 ${previewNotice}${coverageNotice}${scan.safetyWarning ? `<div class="notice"><b>Scan safety warning:</b> ${escapeHtml(scan.safetyWarning)}</div>` : ""}
 <section><h2>Findings and evidence</h2>${results.length ? results.map((result) => resultRow(result, { policy, scan })).join("") : `<div class="metric">No scenario evidence is available yet.</div>`}</section>
 <footer class="muted" style="margin-top:30px">This report is evidence from the selected scan and is not a guarantee against every possible attack. Verify remediation with a fresh scan and confirm the customer executor rejects direct sensitive calls.</footer>

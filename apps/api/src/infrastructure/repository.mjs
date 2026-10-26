@@ -29,6 +29,7 @@ import { quickstartScenarioIds } from "../features/quickstart/domain.mjs";
 import { createIncidentNotification } from "../features/incidents/incident-repository.mjs";
 import { currentUsagePeriodStart, insertUsageMeasurement } from "../features/billing/usage-repository.mjs";
 import { buildRemediation, buildRemediationSummary } from "../features/reports/remediation.mjs";
+import { SCAN_CATALOG_VERSION } from "../features/scans/scan-verdict.mjs";
 export { recordUsageMeasurement } from "../features/billing/usage-repository.mjs";
 
 function mapAgent(row) {
@@ -130,6 +131,9 @@ function mapScan(row) {
     failed: row.failed,
     blocked: row.blocked,
     simulated: row.simulated,
+    inconclusive: Number(row.inconclusive ?? 0),
+    refused: Number(row.refused ?? 0),
+    proposed: Number(row.proposed ?? 0),
     durationMs: row.duration_ms,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -139,6 +143,11 @@ function mapScan(row) {
     safetyStatus: row.safety_status ?? "safe",
     safetyWarning: row.safety_warning ?? null,
     contractVersion: Number(row.contract_version ?? 0),
+    policyVersion: Number(row.policy_version ?? 0),
+    policySnapshot: row.policy_snapshot ?? null,
+    catalogVersion: row.catalog_version ?? SCAN_CATALOG_VERSION,
+    promptVersion: row.prompt_version ?? "prompt-v1",
+    verdict: row.verdict ?? "pending",
     scenarioCount: Array.isArray(row.scenario_ids) ? row.scenario_ids.length : undefined,
     createdAt: row.created_at,
     startedAt: row.started_at,
@@ -158,6 +167,12 @@ function mapScanProgress(row) {
     guard: row.guard_decision
       ? { decision: row.guard_decision, execution: row.execution }
       : null,
+    verdict: row.verdict ?? null,
+    agentBehavior: row.agent_behavior ?? null,
+    executionSafety: row.execution_safety ?? null,
+    executionMode: row.execution_mode ?? null,
+    source: row.source ?? null,
+    requestId: row.request_id ?? null,
     reasons: row.reasons ?? [],
     call: row.tool_call,
     error: row.error,
@@ -2152,9 +2167,18 @@ export async function registerUser({
       "INSERT INTO memberships (user_id, workspace_id, role) VALUES ($1, $2, 'owner')",
       [userId, workspaceId],
     );
+    const policyId = `policy-${randomUUID()}`;
     await client.query(
       "INSERT INTO policies (id, workspace_id, name) VALUES ($1, $2, $3)",
-      [`policy-${randomUUID()}`, workspaceId, "Storefront refunds"],
+      [policyId, workspaceId, "Storefront refunds"],
+    );
+    await client.query(
+      `INSERT INTO policy_revisions
+       (id, policy_id, workspace_id, version, name, max_amount, max_age_days, currency, enforcement)
+       SELECT 'policy-revision-' || id || '-1', id, workspace_id, version, name, max_amount, max_age_days, currency, enforcement
+       FROM policies WHERE id=$1
+       ON CONFLICT (policy_id, version) DO NOTHING`,
+      [policyId],
     );
     const { start, end } = billingPeriodBounds();
     await client.query(
@@ -3553,6 +3577,7 @@ export async function getPolicy(workspaceId) {
     maxAgeDays: row.max_age_days,
     currency: row.currency,
     enforcement: row.enforcement,
+    version: Number(row.version ?? 1),
   };
 }
 
@@ -3563,24 +3588,46 @@ export async function updatePolicy({
   maxAmount,
   maxAgeDays,
   currency,
+  changedBy = null,
 }) {
-  const result = await query(
-    `UPDATE policies
-     SET name=$3, max_amount=$4, max_age_days=$5, currency=$6
-     WHERE id=$1 AND workspace_id=$2
-     RETURNING *`,
-    [policyId, workspaceId, name, maxAmount, maxAgeDays, currency],
-  );
-  const row = result.rows[0];
-  if (!row) return null;
-  return {
-    id: row.id,
-    name: row.name,
-    maxAmount: Number(row.max_amount),
-    maxAgeDays: row.max_age_days,
-    currency: row.currency,
-    enforcement: row.enforcement,
-  };
+  return withTransaction(async (client) => {
+    const result = await client.query(
+      `UPDATE policies
+       SET name=$3, max_amount=$4, max_age_days=$5, currency=$6, version=version+1
+       WHERE id=$1 AND workspace_id=$2
+       RETURNING *`,
+      [policyId, workspaceId, name, maxAmount, maxAgeDays, currency],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    await client.query(
+      `INSERT INTO policy_revisions
+       (id, policy_id, workspace_id, version, name, max_amount, max_age_days, currency, enforcement, changed_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (policy_id, version) DO NOTHING`,
+      [
+        `policy-revision-${row.id}-${row.version}`,
+        row.id,
+        workspaceId,
+        row.version,
+        row.name,
+        row.max_amount,
+        row.max_age_days,
+        row.currency,
+        row.enforcement,
+        changedBy,
+      ],
+    );
+    return {
+      id: row.id,
+      name: row.name,
+      maxAmount: Number(row.max_amount),
+      maxAgeDays: row.max_age_days,
+      currency: row.currency,
+      enforcement: row.enforcement,
+      version: Number(row.version),
+    };
+  });
 }
 
 export async function listScans(workspaceId, limit = 50) {
@@ -3663,7 +3710,7 @@ export async function getScan(scanId, workspaceId) {
     "SELECT * FROM scan_results WHERE scan_id = $1 ORDER BY created_at",
     [scanId],
   );
-  const workspacePolicy = await getPolicy(workspaceId);
+  const workspacePolicy = scan.policySnapshot?.effective ?? await getPolicy(workspaceId);
   scan.results = details.rows.map((row) => {
     const result = {
       scenarioId: row.scenario_id,
@@ -3675,6 +3722,15 @@ export async function getScan(scanId, workspaceId) {
       guard: row.guard_decision
         ? { decision: row.guard_decision, execution: row.execution }
         : null,
+      verdict: row.verdict ?? (row.status === "PASS" ? "PROTECTED" : row.status === "FAIL" ? "VULNERABLE" : "INCONCLUSIVE"),
+      agentBehavior: row.agent_behavior ?? null,
+      executionSafety: row.execution_safety ?? null,
+      executionMode: row.execution_mode ?? null,
+      source: row.source ?? null,
+      safetyWarning: row.safety_warning ?? null,
+      requestId: row.request_id ?? null,
+      attempt: Number(row.attempt ?? 1),
+      durationMs: row.duration_ms ?? null,
       reasons: row.reasons,
       call: row.tool_call,
     };
@@ -3710,6 +3766,7 @@ export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds =
   let billingReservation;
   let selectedScenarios;
   let contractVersion = 0;
+  let policySnapshot;
   await withTransaction(async (client) => {
     const billingState = await lockBillingState(client, workspaceId);
     const entitledScenarios = scenariosForPlan(billingState.plan);
@@ -3754,6 +3811,68 @@ export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds =
         }
       }
     }
+    const policyResult = await client.query(
+      `SELECT id, name, version, max_amount, max_age_days, currency, enforcement
+       FROM policies WHERE workspace_id=$1 ORDER BY created_at LIMIT 1 FOR UPDATE`,
+      [workspaceId],
+    );
+    const policyRow = policyResult.rows[0] ?? {
+      id: "default-policy",
+      name: "Storefront refunds",
+      version: 0,
+      max_amount: 50,
+      max_age_days: 14,
+      currency: "USD",
+      enforcement: "block_and_log",
+    };
+    const contractResult = contractVersion > 0
+      ? await client.query(
+        `SELECT version, allowed_tool_ids, max_refund_amount, max_order_age_days, notes
+         FROM agent_security_contract_versions
+         WHERE workspace_id=$1 AND agent_id=$2 AND version=$3`,
+        [workspaceId, agentId, contractVersion],
+      )
+      : { rows: [] };
+    const contractRow = contractResult.rows[0] ?? null;
+    const toolResult = await client.query(
+      "SELECT COALESCE(array_agg(tool_id), '{}') AS tool_ids FROM agent_tools WHERE agent_id=$1",
+      [agentId],
+    );
+    const configuredToolIds = toolResult.rows[0]?.tool_ids ?? [];
+    policySnapshot = {
+      policy: {
+        id: policyRow.id,
+        name: policyRow.name,
+        version: Number(policyRow.version ?? 0),
+        maxAmount: Number(policyRow.max_amount),
+        maxAgeDays: Number(policyRow.max_age_days),
+        currency: policyRow.currency,
+        enforcement: policyRow.enforcement,
+      },
+      effective: {
+        name: policyRow.name,
+        maxAmount: Math.min(Number(policyRow.max_amount), Number(contractRow?.max_refund_amount ?? policyRow.max_amount)),
+        maxAgeDays: Math.min(Number(policyRow.max_age_days), Number(contractRow?.max_order_age_days ?? policyRow.max_age_days)),
+        currency: policyRow.currency,
+        enforcement: policyRow.enforcement,
+      },
+      contract: contractRow
+        ? {
+            version: Number(contractRow.version),
+            allowedToolIds: contractRow.allowed_tool_ids ?? [],
+            maxRefundAmount: Number(contractRow.max_refund_amount),
+            maxOrderAgeDays: Number(contractRow.max_order_age_days),
+            notes: contractRow.notes ?? "",
+          }
+        : {
+            version: 0,
+            allowedToolIds: configuredToolIds,
+            maxRefundAmount: Number(policyRow.max_amount),
+            maxOrderAgeDays: Number(policyRow.max_age_days),
+            notes: "Derived from the agent tool allowlist and workspace policy.",
+          },
+      capturedAt: new Date().toISOString(),
+    };
     billingReservation = await reserveScanCredits(client, {
       workspaceId,
       scanId,
@@ -3761,9 +3880,22 @@ export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds =
       billingState,
     });
     await client.query(
-      `INSERT INTO scans (id, workspace_id, agent_id, status, trigger, scenario_ids, contract_version)
-       VALUES ($1, $2, $3, 'queued', $4, $5::jsonb, $6)`,
-      [scanId, workspaceId, agentId, trigger, JSON.stringify(selectedScenarios.map((scenario) => scenario.id)), contractVersion],
+      `INSERT INTO scans
+       (id, workspace_id, agent_id, status, trigger, scenario_ids, contract_version,
+        policy_version, policy_snapshot, catalog_version, prompt_version, verdict)
+       VALUES ($1, $2, $3, 'queued', $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, 'pending')`,
+      [
+        scanId,
+        workspaceId,
+        agentId,
+        trigger,
+        JSON.stringify(selectedScenarios.map((scenario) => scenario.id)),
+        contractVersion,
+        Number(policySnapshot.policy.version ?? 0),
+        JSON.stringify(policySnapshot),
+        SCAN_CATALOG_VERSION,
+        "prompt-v1",
+      ],
     );
     await client.query("INSERT INTO scan_jobs (id, scan_id) VALUES ($1, $2)", [
       jobId,
@@ -3795,6 +3927,9 @@ export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds =
     failed: 0,
     blocked: 0,
     simulated: 0,
+    inconclusive: 0,
+    refused: 0,
+    proposed: 0,
     durationMs: null,
     createdAt: new Date().toISOString(),
     executionMode: "simulation",
@@ -3802,6 +3937,11 @@ export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds =
     safetyWarning: null,
     scenarioCount: selectedScenarios.length,
     contractVersion,
+    policyVersion: Number(policySnapshot.policy.version ?? 0),
+    policySnapshot,
+    catalogVersion: SCAN_CATALOG_VERSION,
+    promptVersion: "prompt-v1",
+    verdict: "pending",
     progress: selectedScenarios.map((scenario, ordinal) => ({
       scenarioId: scenario.id,
       ordinal,
@@ -3827,14 +3967,16 @@ export async function overview(workspaceId) {
     query(
       `WITH latest_completed AS (
              SELECT DISTINCT ON (agent_id)
-               agent_id, score, failed, passed, blocked,
+               agent_id, score, failed, passed, blocked, inconclusive, safety_status,
                COALESCE(NULLIF(jsonb_array_length(scenario_ids), 0), passed + failed) AS scenario_count
              FROM scans
              WHERE workspace_id=$1 AND status='completed'
              ORDER BY agent_id, created_at DESC
            )
-           SELECT COALESCE(ROUND(AVG(score))::int, 0) AS security_score,
+           SELECT COALESCE(ROUND(AVG(CASE WHEN safety_status <> 'safe' THEN 0 ELSE score END))::int, 0) AS security_score,
              COALESCE(SUM(failed), 0)::int AS open_findings,
+             COALESCE(SUM(inconclusive), 0)::int AS inconclusive_scenarios,
+             COALESCE(COUNT(*) FILTER (WHERE safety_status <> 'safe'), 0)::int AS untrusted_agents,
              COALESCE(SUM(blocked), 0)::int AS protected_actions,
              COALESCE(SUM(passed), 0)::int AS passed_scenarios,
              COALESCE(SUM(scenario_count), 0)::int AS total_scenarios,
@@ -3868,6 +4010,8 @@ export async function overview(workspaceId) {
       securityScore: row.security_score,
       protectedActions: row.protected_actions,
       openFindings: row.open_findings,
+      inconclusiveScenarios: row.inconclusive_scenarios,
+      untrustedAgents: row.untrusted_agents,
       scansThisMonth: row.scans_this_month,
       scoreBasis: "latest_completed_scan_per_agent",
       testedScenarios: Number(row.tested_scenarios ?? 0),

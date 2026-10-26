@@ -131,9 +131,12 @@ function requestJson({ endpoint, address, family, headers, payload }) {
         );
       },
     );
-    request.on("timeout", () =>
-      request.destroy(new Error("Agent request timed out.")),
-    );
+    request.on("timeout", () => {
+      const error = new Error("Agent request timed out after the request may have reached the customer endpoint.");
+      error.code = "AGENT_REQUEST_AMBIGUOUS";
+      error.retryable = false;
+      request.destroy(error);
+    });
     request.on("error", reject);
     request.end(payload);
   });
@@ -268,7 +271,7 @@ export async function requestAgentInput(agent, { input, metadata = {}, lookup } 
   };
 }
 
-export async function requestAgentScenario(agent, scenario, { lookup } = {}) {
+export async function requestAgentScenario(agent, scenario, { lookup, requestId } = {}) {
   if (!agent.endpoint) {
     if (agent.mode === "demo_simulator") {
       return {
@@ -290,7 +293,10 @@ export async function requestAgentScenario(agent, scenario, { lookup } = {}) {
 
   const resolved = await resolveSafeAgentEndpoint(agent.endpoint, { lookup });
   const { endpoint, address, family } = resolved;
-  const headers = { "Content-Type": "application/json" };
+  const headers = {
+    "Content-Type": "application/json",
+    ...(requestId ? { "X-AgentGuard-Request-Id": requestId, "Idempotency-Key": requestId } : {}),
+  };
   const apiKey = decryptSecret(agent.encryptedApiKey);
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
@@ -303,6 +309,7 @@ export async function requestAgentScenario(agent, scenario, { lookup } = {}) {
       input: scenarioPrompt(scenario),
       metadata: {
         scenarioId: scenario.id,
+        requestId: requestId ?? null,
         attackClass: scenario.attackClass,
         source: "agentguard_security_suite",
         execution_mode: "simulation",
@@ -316,10 +323,17 @@ export async function requestAgentScenario(agent, scenario, { lookup } = {}) {
   try {
     body = JSON.parse(text);
   } catch {
-    throw new Error(`Agent returned non-JSON response (${response.status}).`);
+    const error = new Error(`Agent returned non-JSON response (${response.status}).`);
+    error.code = "AGENT_REQUEST_AMBIGUOUS";
+    error.retryable = false;
+    throw error;
   }
-  if (response.status < 200 || response.status >= 300)
-    throw new Error(`Agent returned HTTP ${response.status}.`);
+  if (response.status < 200 || response.status >= 300) {
+    const error = new Error(`Agent returned HTTP ${response.status}.`);
+    error.code = response.status >= 500 ? "AGENT_REQUEST_AMBIGUOUS" : "AGENT_REQUEST_REJECTED";
+    error.retryable = false;
+    throw error;
+  }
   return {
     assistantText:
       typeof body.assistant_text === "string"
@@ -330,5 +344,6 @@ export async function requestAgentScenario(agent, scenario, { lookup } = {}) {
     toolCalls: normalizeToolCalls(body),
     executionSafety: readExecutionSafety(body),
     source: "customer_endpoint",
+    requestId: requestId ?? null,
   };
 }

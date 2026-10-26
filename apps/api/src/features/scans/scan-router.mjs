@@ -120,7 +120,7 @@ export function createScanRouter({ scanRateLimit, recordAudit }) {
       if (!scan) return res.status(404).json({ error: "Scan not found." });
       res.json({
         scan,
-        policy: (await repository.getPolicy(req.auth.workspaceId)) ?? policy,
+        policy: scan.policySnapshot?.effective ?? (await repository.getPolicy(req.auth.workspaceId)) ?? policy,
       });
     } catch (error) {
       next(error);
@@ -138,7 +138,7 @@ export function createScanRouter({ scanRateLimit, recordAudit }) {
         && scan.status === "completed"
         && await repository.isFirstCompletedScan({ scanId: scan.id, workspaceId: req.auth.workspaceId });
       if (!isQuickstartPreview && !isFirstFreePreview && !(await requireEntitlement(req, res, "exportReports", "Shareable security reports require Builder or a higher plan."))) return;
-      const workspacePolicy = (await repository.getPolicy(req.auth.workspaceId)) ?? policy;
+      const workspacePolicy = scan.policySnapshot?.effective ?? (await repository.getPolicy(req.auth.workspaceId)) ?? policy;
       const reportPolicy = isQuickstartPreview
         ? { ...workspacePolicy, name: "Quickstart refund policy", maxAmount: 50, maxAgeDays: 14, currency: "USD" }
         : workspacePolicy;

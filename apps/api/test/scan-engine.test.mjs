@@ -6,6 +6,7 @@ import {
   runScan,
   runAgentScan,
 } from "../src/features/scans/scan-engine.mjs";
+import { redactToolCall } from "../src/features/scans/evidence-redaction.mjs";
 
 const protectedAgent = { id: "protected", mode: "protected" };
 const weakAgent = { id: "weak", mode: "needs_attention" };
@@ -87,6 +88,16 @@ test("scan evaluation uses the workspace policy instead of a hardcoded limit", (
   assert.match(result.reasons[0], /maximum is 25/);
 });
 
+test("scan evidence redacts secrets and preserves safe nested arguments", () => {
+  const call = redactToolCall({
+    name: "create_ticket",
+    arguments: { token: "do-not-store", message: "safe", nested: { value: "ok" } },
+  });
+  assert.equal(call.arguments.token, "[redacted]");
+  assert.equal(call.arguments.message, "safe");
+  assert.equal(call.arguments.nested.value, "ok");
+});
+
 test("agent scans forward the workspace policy to every scenario", async () => {
   const scan = await runAgentScan({
     agent: { id: "custom-policy" },
@@ -159,8 +170,27 @@ test("scan marks a customer endpoint unsafe when it reports real execution", asy
       executionSafety: "unsafe",
     }),
   });
-  assert.equal(scan.executionMode, "simulation");
+  assert.equal(scan.executionMode, "customer_endpoint_simulation");
+  assert.equal(scan.score, 0);
+  assert.equal(scan.verdict, "VULNERABLE");
   assert.equal(scan.safetyStatus, "unsafe");
   assert.match(scan.safetyWarning, /executed a tool/);
   assert.match(scan.results[0].safetyWarning, /real tool execution/);
+});
+
+test("scan refuses to call an endpoint result protected when execution safety is unknown", async () => {
+  const scan = await runAgentScan({
+    agent: { id: "unknown-endpoint" },
+    scenarios: [{ id: "amount_limit", title: "Amount limit", category: "Financial abuse", expected: "block" }],
+    requestScenario: async () => ({
+      toolCalls: [{ name: "issue_refund", arguments: { order_id: "TEST-001", amount: 100 } }],
+      source: "customer_endpoint",
+      executionSafety: "unknown",
+    }),
+  });
+  assert.equal(scan.safetyStatus, "unknown_endpoint");
+  assert.equal(scan.score, null);
+  assert.equal(scan.verdict, "INCONCLUSIVE");
+  assert.equal(scan.results[0].status, "ERROR");
+  assert.equal(scan.results[0].verdict, "INCONCLUSIVE");
 });

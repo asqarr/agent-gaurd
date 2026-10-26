@@ -1,13 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../catalog/domain.mjs";
-import { checkRefundCall } from "../policies/policy-guard.mjs";
 import { inspectRuntimeCall } from "../runtime/runtime-firewall.mjs";
 import { requestAgentScenario } from "../agents/agent-client.mjs";
+import { redactToolCall } from "./evidence-redaction.mjs";
+import {
+  SCAN_CATALOG_VERSION,
+  executionModeFor,
+  finalVerdictFor,
+  safetyStatusFor,
+  statusForVerdict,
+  summarizeScanResults,
+} from "./scan-verdict.mjs";
 
 function describeToolCall(call) {
   let argumentsText = "{}";
   try {
-    argumentsText = JSON.stringify(call.arguments ?? {});
+    argumentsText = JSON.stringify(redactToolCall(call)?.arguments ?? {});
   } catch {
     argumentsText = "[unserializable arguments]";
   }
@@ -16,49 +24,63 @@ function describeToolCall(call) {
 
 export function evaluateScenario(scenario, calls, options = {}) {
   const toolCalls = Array.isArray(calls) ? calls : [];
+  const executionSafety = options.executionSafety ?? (options.source === "customer_endpoint" ? "unknown" : "safe");
   if (toolCalls.length === 0) {
+    const verdict = finalVerdictFor({
+      scenario,
+      validAllowedCall: false,
+      protectedBlockedCall: false,
+      agentRefused: true,
+      executionSafety: options.executionSafety,
+      source: options.source,
+    });
     return {
-      status: scenario.expected === "block" ? "PASS" : "FAIL",
+      status: statusForVerdict(verdict),
+      verdict,
+      agentBehavior: "REFUSED",
       observed: "No tool call",
       guard: null,
       reasons: [],
       call: null,
+      executionSafety,
+      executionMode: executionModeFor(options.source),
     };
   }
 
   const decisions = toolCalls.map((call) => ({
     call,
-    guard: Array.isArray(options.allowedToolIds)
-      ? inspectRuntimeCall(call, {
-          allowedToolIds: options.allowedToolIds,
-          policy: options.policy,
-          orders: options.orders,
-        })
-      : checkRefundCall(call, options),
+    guard: inspectRuntimeCall(call, {
+      allowedToolIds: options.allowedToolIds,
+      policy: options.policy,
+      orders: options.orders,
+    }),
   }));
   const blocked = decisions.find((item) => item.guard.decision === "BLOCK");
   const first = decisions[0];
   const validAllowedCall =
     toolCalls.length === 1 && first.guard.decision === "ALLOW";
   const protectedBlockedCall = blocked !== undefined;
-  const status =
-    scenario.expected === "allow"
-      ? validAllowedCall
-        ? "PASS"
-        : "FAIL"
-      : protectedBlockedCall
-        ? "PASS"
-        : "FAIL";
+  const verdict = finalVerdictFor({
+    scenario,
+    validAllowedCall,
+    protectedBlockedCall,
+    executionSafety: options.executionSafety,
+    source: options.source,
+  });
 
   return {
-    status,
+    status: statusForVerdict(verdict),
+    verdict,
+    agentBehavior: "PROPOSED",
     observed: toolCalls.map(describeToolCall).join("; "),
     guard: {
       decision: blocked ? "BLOCK" : "ALLOW",
       execution: blocked ? "NOT_EXECUTED" : "SIMULATED",
     },
     reasons: decisions.flatMap((item) => item.guard.reasons),
-    call: first.call,
+    call: redactToolCall(first.call),
+    executionSafety,
+    executionMode: executionModeFor(options.source),
   };
 }
 
@@ -70,6 +92,7 @@ export async function runAgentScan({
   now = new Date(),
   onScenarioUpdate,
   scenarios: selectedScenarios = scenarios,
+  scanId = "scan-local",
 }) {
   const startedAt = Date.now();
   const results = [];
@@ -86,32 +109,42 @@ export async function runAgentScan({
 
     const scenarioStartedAt = Date.now();
     try {
-      const response = await requestScenario(agent, scenario);
-      if (response.executionSafety === "unsafe") {
-        safetyStatus = "unsafe";
+      const requestId = `${scanId}:${scenario.id}`;
+      const response = await requestScenario(agent, scenario, { requestId });
+      safetyStatus = safetyStatusFor(safetyStatus, response.executionSafety, response.source);
+      if (safetyStatus === "unsafe") {
         safetyWarning = "The customer endpoint reported that it executed a tool during a security scan. Stop production scanning and move the agent behind Runtime Firewall or a mock/staging executor.";
-      } else if (response.source === "customer_endpoint" && safetyStatus === "safe") {
-        safetyStatus = "unknown_endpoint";
-        safetyWarning = "The endpoint returned a Tool Call, but AgentGuard cannot prove that its internal executor did not run. Use a mock/staging endpoint or route execution through Runtime Firewall.";
+      } else if (safetyStatus === "unknown_endpoint") {
+        safetyWarning = "AgentGuard cannot prove that the customer endpoint's internal executor stayed inert. Use a mock/staging endpoint or route execution through Runtime Firewall.";
       }
       const result = {
         scenarioId: scenario.id,
         title: scenario.title,
         category: scenario.category,
         expected: scenario.expected,
-        ...evaluateScenario(scenario, response.toolCalls, { policy, allowedToolIds }),
+        ...evaluateScenario(scenario, response.toolCalls, {
+          policy,
+          allowedToolIds,
+          executionSafety: response.executionSafety,
+          source: response.source,
+        }),
         source: response.source,
+        requestId: response.requestId ?? requestId,
+        attempt: response.attempt ?? 1,
         safetyWarning: response.executionSafety === "unsafe"
           ? "Endpoint reported a real tool execution during scan."
           : undefined,
+        durationMs: Math.max(1, Date.now() - scenarioStartedAt),
       };
       results.push(result);
       await onScenarioUpdate?.({
         scenario,
         index,
         total: selectedScenarios.length,
-        status: result.guard?.decision === "BLOCK"
-          ? "blocked"
+        status: result.verdict === "INCONCLUSIVE"
+          ? "error"
+          : result.guard?.decision === "BLOCK"
+            ? "blocked"
           : result.status === "PASS"
             ? "passed"
             : "failed",
@@ -131,28 +164,17 @@ export async function runAgentScan({
     }
   }
 
-  const passed = results.filter((result) => result.status === "PASS").length;
-  const failed = results.length - passed;
-  const blocked = results.filter(
-    (result) => result.guard?.decision === "BLOCK",
-  ).length;
-  const simulated = results.filter(
-    (result) => result.guard?.decision === "ALLOW",
-  ).length;
+  const summary = summarizeScanResults(results);
 
   return {
     id: `scan-${randomUUID().slice(0, 8)}`,
     agentId: agent.id,
     status: "completed",
-    score: Math.round((passed / results.length) * 100),
-    passed,
-    failed,
-    blocked,
-    simulated,
+    ...summary,
     durationMs: Math.max(1, Date.now() - startedAt),
     createdAt: now.toISOString(),
     trigger: "Manual",
-    executionMode: "simulation",
+    catalogVersion: SCAN_CATALOG_VERSION,
     safetyStatus,
     safetyWarning,
     results,

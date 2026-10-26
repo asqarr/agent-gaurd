@@ -71,12 +71,16 @@ export async function processNextScanJob({ workerId = `scan-worker-${randomUUID(
       });
     }, Math.max(1000, Math.floor(config.scanJobLeaseMs / 3)));
 
+    const snapshot = context.policy_snapshot && typeof context.policy_snapshot === "object"
+      ? context.policy_snapshot
+      : null;
     const scanPolicy = context.mode === "demo_simulator"
-      ? { maxAmount: 50, maxAgeDays: 14, currency: "USD" }
-      : {
+      ? { maxAmount: 50, maxAgeDays: 14, currency: "USD", name: "Quickstart refund policy", version: 0 }
+      : snapshot?.effective ?? {
         maxAmount: Math.min(Number(context.max_amount ?? 50), Number(context.contract_max_refund_amount ?? context.max_amount ?? 50)),
         maxAgeDays: Math.min(Number(context.max_age_days ?? 14), Number(context.contract_max_order_age_days ?? context.max_age_days ?? 14)),
         currency: context.currency ?? "USD",
+        version: Number(context.policy_version ?? 0),
       };
     const outcome = await runAgentScan({
       agent: {
@@ -86,9 +90,16 @@ export async function processNextScanJob({ workerId = `scan-worker-${randomUUID(
         encryptedApiKey: context.encrypted_api_key,
       },
       policy: scanPolicy,
-      allowedToolIds: Array.isArray(context.contract_allowed_tool_ids) ? context.contract_allowed_tool_ids : undefined,
+      allowedToolIds: Array.isArray(snapshot?.contract?.allowedToolIds)
+        ? snapshot.contract.allowedToolIds
+        : Array.isArray(context.contract_allowed_tool_ids)
+          ? context.contract_allowed_tool_ids
+          : Array.isArray(context.agent_tool_ids)
+            ? context.agent_tool_ids
+            : undefined,
       requestScenario: requestAgentScenario,
       scenarios: selectedScenarios,
+      scanId: job.scan_id,
       onScenarioUpdate: (progress) => updateScanProgress({
         scanId: job.scan_id,
         leaseToken,
@@ -128,7 +139,7 @@ export async function processNextScanJob({ workerId = `scan-worker-${randomUUID(
       return false;
     }
     try {
-      if (error?.code === "AGENT_QUARANTINED") {
+      if (error?.code === "AGENT_QUARANTINED" || error?.code === "AGENT_REQUEST_AMBIGUOUS" || error?.code === "AGENT_REQUEST_REJECTED") {
         await failScan({ scanId: job.scan_id, leaseToken, errorMessage: message, metrics: buildMeasurement() });
       } else if (job.attempts < config.scanMaxAttempts) {
         const delayMs = config.scanRetryBaseMs * 2 ** Math.max(0, job.attempts - 1);

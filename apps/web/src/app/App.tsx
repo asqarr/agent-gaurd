@@ -1404,8 +1404,8 @@ function mergeScanIntoOverview(current: Overview, scan: Scan): Overview {
     metrics: {
       ...current.metrics,
       securityScore:
-        scan.status === "completed" && scan.score != null
-          ? scan.score
+        scan.status === "completed"
+          ? (scan.score ?? 0)
           : current.metrics.securityScore,
       testedScenarios: scan.status === "completed"
         ? scanScenarioTotal(scan)
@@ -1540,7 +1540,7 @@ function App() {
       const refreshed = await refreshDashboard().catch(() => null);
       if (!refreshed) setOverview((current) => mergeScanIntoOverview(current, scan));
       if (scan.status === "completed") {
-        setToast(`Scan complete · ${scan.score}/100 security score`);
+        setToast(`Scan complete · ${scan.score == null ? "unscored" : `${scan.score}/100`} · ${scan.inconclusive ?? 0} inconclusive`);
       } else if (scan.status === "failed") {
         setToast(`Scan failed · ${scan.error ?? "worker error"}`);
       } else {
@@ -1565,7 +1565,7 @@ function App() {
       const scan = await runScan(agentId, (nextScan) => setActiveScan(nextScan), [scenarioId]);
       await refreshDashboard().catch(() => null);
       setToast(scan.status === "completed"
-        ? `Retest complete · ${scan.score}/100 · ${scenarioId}`
+        ? `Retest complete · ${scan.score == null ? "unscored" : `${scan.score}/100`} · ${scenarioId}`
         : `Retest ${scan.status} · ${scan.error ?? "worker error"}`);
     } catch (caught) {
       setToast(caught instanceof Error ? caught.message : "Remediation retest failed.");
@@ -1602,7 +1602,7 @@ function App() {
           : agent));
       }
       setToast(scan.status === "completed"
-        ? `Demo complete · ${scan.score}/100 · $100 refund blocked before execution`
+        ? `Demo complete · ${scan.score == null ? "unscored" : `${scan.score}/100`} · $100 refund blocked before execution`
         : `Demo scan ${scan.status} · review the evidence panel`);
       setConnected(true);
     } catch (caught) {
@@ -1978,6 +1978,13 @@ function App() {
             label="Open findings"
             value={overview.metrics.openFindings}
             delta="Unsafe proposals that were not blocked"
+            icon="activity"
+            tone="orange"
+          />
+          <MetricCard
+            label="Inconclusive evidence"
+            value={overview.metrics.inconclusiveScenarios ?? 0}
+            delta="Execution safety still needs proof"
             icon="activity"
             tone="orange"
           />

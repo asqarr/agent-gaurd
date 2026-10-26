@@ -116,6 +116,7 @@ export async function getWorkerContext(scanId) {
   const result = await query(
     `SELECT s.*, a.name AS agent_name, a.endpoint_url, a.encrypted_api_key, a.mode,
             a.provider, a.model, a.environment, a.status AS agent_status,
+            COALESCE((SELECT array_agg(at.tool_id) FROM agent_tools at WHERE at.agent_id=a.id), '{}') AS agent_tool_ids,
             p.max_amount, p.max_age_days, p.currency, p.name AS policy_name,
             c.allowed_tool_ids AS contract_allowed_tool_ids,
             c.max_refund_amount AS contract_max_refund_amount,
@@ -150,6 +151,12 @@ export async function updateScanProgress({ scanId, leaseToken, status, scenario,
          reasons=$7::jsonb,
          tool_call=$8::jsonb,
          error=$9,
+         verdict=$12,
+         agent_behavior=$13,
+         execution_safety=$14,
+         execution_mode=$15,
+         source=$16,
+         request_id=$17,
          started_at=CASE WHEN $3='running' THEN COALESCE(p.started_at, NOW()) ELSE p.started_at END,
          finished_at=CASE WHEN $3 IN ('passed','blocked','failed','error') THEN NOW() ELSE p.finished_at END,
          duration_ms=CASE WHEN $3 IN ('passed','blocked','failed','error') THEN $10 ELSE p.duration_ms END
@@ -170,6 +177,12 @@ export async function updateScanProgress({ scanId, leaseToken, status, scenario,
       error ?? null,
       durationMs ?? null,
       leaseToken,
+      result?.verdict ?? null,
+      result?.agentBehavior ?? null,
+      result?.executionSafety ?? null,
+      result?.executionMode ?? null,
+      result?.source ?? null,
+      result?.requestId ?? null,
     ],
   );
 }
@@ -185,7 +198,8 @@ export async function completeScan({ scanId, leaseToken, outcome }) {
     await client.query(
       `UPDATE scans SET status='completed', score=$2, passed=$3, failed=$4, blocked=$5,
        simulated=$6, duration_ms=$7, execution_mode=$8, safety_status=$9,
-       safety_warning=$10, finished_at=NOW(), error=NULL WHERE id=$1`,
+       safety_warning=$10, inconclusive=$11, refused=$12, proposed=$13,
+       verdict=$14, catalog_version=$15, finished_at=NOW(), error=NULL WHERE id=$1`,
       [
         scanId,
         outcome.score,
@@ -197,12 +211,20 @@ export async function completeScan({ scanId, leaseToken, outcome }) {
         outcome.executionMode ?? "simulation",
         outcome.safetyStatus ?? "safe",
         outcome.safetyWarning ?? null,
+        outcome.inconclusive ?? 0,
+        outcome.refused ?? 0,
+        outcome.proposed ?? 0,
+        outcome.verdict ?? "INCONCLUSIVE",
+        outcome.catalogVersion ?? "catalog-v1",
       ],
     );
     for (const result of outcome.results) {
       await client.query(
-        `INSERT INTO scan_results (id, scan_id, scenario_id, title, category, expected, observed, status, guard_decision, execution, reasons, tool_call)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        `INSERT INTO scan_results
+         (id, scan_id, scenario_id, title, category, expected, observed, status,
+          guard_decision, execution, reasons, tool_call, verdict, agent_behavior,
+          execution_safety, execution_mode, source, safety_warning, request_id, attempt, duration_ms)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
         [
           `result-${randomUUID()}`,
           scanId,
@@ -216,6 +238,15 @@ export async function completeScan({ scanId, leaseToken, outcome }) {
           result.guard?.execution ?? null,
           JSON.stringify(result.reasons ?? []),
           result.call ? JSON.stringify(result.call) : null,
+          result.verdict ?? "INCONCLUSIVE",
+          result.agentBehavior ?? null,
+          result.executionSafety ?? null,
+          result.executionMode ?? outcome.executionMode ?? null,
+          result.source ?? null,
+          result.safetyWarning ?? null,
+          result.requestId ?? null,
+          result.attempt ?? 1,
+          result.durationMs ?? null,
         ],
       );
     }
@@ -251,7 +282,7 @@ export async function completeScan({ scanId, leaseToken, outcome }) {
     }
   });
 
-  if (outcome.failed > 0 || outcome.score < 70) {
+  if (outcome.failed > 0 || (outcome.inconclusive ?? 0) > 0 || outcome.safetyStatus === "unsafe" || (outcome.score != null && outcome.score < 70)) {
     const scanContext = await query(
       `SELECT s.workspace_id, s.agent_id, a.name AS agent_name
        FROM scans s JOIN agents a ON a.id=s.agent_id WHERE s.id=$1`,
@@ -264,12 +295,12 @@ export async function completeScan({ scanId, leaseToken, outcome }) {
         agentId: context.agent_id,
         agentName: context.agent_name,
         eventType: "scan_finding",
-        severity: outcome.score < 50 ? "critical" : outcome.failed >= 3 ? "high" : "medium",
-        message: `${outcome.failed} scenario${outcome.failed === 1 ? "" : "s"} failed in the latest security scan (${outcome.score}/100). Review the evidence before trusting this agent.`,
+        severity: outcome.safetyStatus === "unsafe" || (outcome.score != null && outcome.score < 50) ? "critical" : outcome.failed >= 3 ? "high" : "medium",
+        message: `${outcome.failed} vulnerable and ${outcome.inconclusive ?? 0} inconclusive scenario${(outcome.failed + (outcome.inconclusive ?? 0)) === 1 ? "" : "s"} recorded in the latest security scan (${outcome.score ?? "unscored"}/100). Review the evidence before trusting this agent.`,
         dedupeKey: `scan:${scanId}`,
         resourceType: "scan",
         resourceId: scanId,
-        metadata: { score: outcome.score, passed: outcome.passed, failed: outcome.failed, blocked: outcome.blocked },
+        metadata: { score: outcome.score, passed: outcome.passed, failed: outcome.failed, inconclusive: outcome.inconclusive ?? 0, blocked: outcome.blocked },
       });
     }
   }

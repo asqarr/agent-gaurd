@@ -5,11 +5,13 @@ import type { AttackPathResult, Scan, ScanProgress, ScanRemediation, SecurityDem
 type ScanResult = NonNullable<Scan["results"]>[number];
 
 function wasBlockedSafely(result: ScanResult) {
-  return result.guard?.decision === "BLOCK" && result.guard.execution === "NOT_EXECUTED";
+  return result.verdict === "PROTECTED"
+    ? result.guard?.decision === "BLOCK" && result.guard.execution === "NOT_EXECUTED"
+    : !result.verdict && result.guard?.decision === "BLOCK" && result.guard.execution === "NOT_EXECUTED";
 }
 
 function resultTone(result: ScanResult) {
-  return result.status === "ERROR"
+  return result.verdict === "INCONCLUSIVE" || result.status === "ERROR"
     ? "warning"
     : result.status === "FAIL" && !wasBlockedSafely(result)
       ? "danger"
@@ -17,8 +19,11 @@ function resultTone(result: ScanResult) {
 }
 
 function resultLabel(result: ScanResult) {
+  if (result.verdict === "INCONCLUSIVE") return "Needs review";
+  if (result.verdict === "VULNERABLE") return "Vulnerable";
   if (result.status === "ERROR") return "Error";
   if (wasBlockedSafely(result)) return "Blocked safely";
+  if (result.agentBehavior === "REFUSED") return "Agent refused";
   return result.status === "PASS" ? "Passed" : "Finding";
 }
 
@@ -118,7 +123,7 @@ function ThreatReplay({ results }: { results: ScanResult[] }) {
               <div className="threat-replay__stage threat-replay__stage--outcome">
                 <span>04 · OUTCOME</span>
                 <strong>{active.guard?.execution ?? "NO EXECUTION"}</strong>
-                <small>{wasBlockedSafely(active) ? "Unsafe proposal stopped before execution" : active.status === "PASS" ? "Agent stayed within policy" : active.status === "FAIL" ? "Unsafe behavior reached the decision boundary" : "Scenario needs review"}</small>
+                <small>{active.verdict === "INCONCLUSIVE" ? "Execution boundary could not be proven" : wasBlockedSafely(active) ? "Unsafe proposal stopped before execution" : active.agentBehavior === "REFUSED" ? "Agent refused the request" : active.status === "PASS" ? "Agent stayed within policy" : active.status === "FAIL" ? "Unsafe behavior reached the decision boundary" : "Scenario needs review"}</small>
               </div>
             </div>
           </div>
@@ -270,6 +275,10 @@ export function ScanEvidencePanel({
           <strong>{scan.blocked}</strong>
         </div>
         <div>
+          <span>Inconclusive</span>
+          <strong className={scan.inconclusive ? "finding-count" : "table-value"}>{scan.inconclusive ?? 0}</strong>
+        </div>
+        <div>
           <span>Duration</span>
           <strong>{formatDuration(scan.durationMs)}</strong>
         </div>
@@ -278,9 +287,10 @@ export function ScanEvidencePanel({
           <strong>{testedScenarioCount}<small>/12</small></strong>
         </div>
       </div>
-      <div className="scan-evidence__score-note" role="note"><Icon name="activity" size={13} /><span>This is a control score for the selected evidence, not a guarantee of complete agent security. {fullSuite ? "The full 12-scenario suite was evaluated." : `Only ${testedScenarioCount}/12 scenarios were evaluated; advanced chains may remain incomplete.`}</span></div>
+      <div className="scan-evidence__score-note" role="note"><Icon name="activity" size={13} /><span>This is a control score for the selected evidence, not a guarantee of complete agent security. {scan.inconclusive ? "The score is withheld because execution safety could not be proven." : fullSuite ? "The full 12-scenario suite was evaluated." : `Only ${testedScenarioCount}/12 scenarios were evaluated; advanced chains may remain incomplete.`}</span></div>
       <div className="scan-evidence__legend" role="note">
         <span><i className="scan-legend-dot scan-legend-dot--safe" />Passed = expected outcome observed</span>
+        <span><i className="scan-legend-dot scan-legend-dot--warning" />Needs review = execution safety unproven</span>
         <span><i className="scan-legend-dot scan-legend-dot--blocked" />Blocked safely = proposal stopped before execution</span>
         <span><i className="scan-legend-dot scan-legend-dot--finding" />Finding = unsafe proposal was not blocked</span>
       </div>

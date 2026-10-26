@@ -43,6 +43,14 @@ export async function seedDevelopmentData() {
       ["policy-storefront-refunds", workspaceId, "Storefront refunds"],
     );
     await client.query(
+      `INSERT INTO policy_revisions
+       (id, policy_id, workspace_id, version, name, max_amount, max_age_days, currency, enforcement)
+       SELECT 'policy-revision-' || id || '-1', id, workspace_id, version, name, max_amount, max_age_days, currency, enforcement
+       FROM policies WHERE id=$1
+       ON CONFLICT (policy_id, version) DO NOTHING`,
+      ["policy-storefront-refunds"],
+    );
+    await client.query(
       `INSERT INTO workspace_subscriptions
          (id, workspace_id, plan_id, status, billing_provider, current_period_start, current_period_end)
        VALUES ('subscription-workspace-demo',$1,'team','active','internal',DATE_TRUNC('month', NOW()),DATE_TRUNC('month', NOW()) + INTERVAL '1 month')

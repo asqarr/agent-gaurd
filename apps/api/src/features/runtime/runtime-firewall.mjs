@@ -6,7 +6,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { tools } from "../catalog/domain.mjs";
-import { checkRefundCall } from "../policies/policy-guard.mjs";
+import { checkToolCall } from "../policies/policy-guard.mjs";
 import { config } from "../../core/config.mjs";
 
 export function createRuntimeToken() {
@@ -108,7 +108,7 @@ function summarizeInspections(inspections) {
   };
 }
 
-export function inspectRuntimeCall(call, { allowedToolIds = [], policy, orders } = {}) {
+export function inspectRuntimeCall(call, { allowedToolIds = null, policy, orders } = {}) {
   const tool = tools.find((item) => item.name === call?.name);
   if (!tool) {
     return {
@@ -119,7 +119,7 @@ export function inspectRuntimeCall(call, { allowedToolIds = [], policy, orders }
     };
   }
 
-  if (!allowedToolIds.includes(tool.id)) {
+  if (Array.isArray(allowedToolIds) && !allowedToolIds.includes(tool.id)) {
     return {
       decision: "BLOCK",
       execution: "NOT_EXECUTED",
@@ -137,19 +137,10 @@ export function inspectRuntimeCall(call, { allowedToolIds = [], policy, orders }
     };
   }
 
-  if (tool.name === "issue_refund") {
-    const guard = checkRefundCall(call, { policy, orders });
-    return {
-      ...guard,
-      execution: guard.decision === "ALLOW" ? "PASS_THROUGH" : "NOT_EXECUTED",
-      call,
-    };
-  }
-
+  const guard = checkToolCall(call, { policy, orders });
   return {
-    decision: "BLOCK",
-    execution: "NOT_EXECUTED",
-    reasons: [`${tool.name} has a side effect but no runtime policy is configured for it.`],
+    ...guard,
+    execution: guard.decision === "ALLOW" ? "PASS_THROUGH" : "NOT_EXECUTED",
     call,
   };
 }
