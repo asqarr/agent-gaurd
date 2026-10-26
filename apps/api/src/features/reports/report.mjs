@@ -1,3 +1,5 @@
+import { buildRemediation } from "./remediation.mjs";
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -76,16 +78,19 @@ function remediationFor(result, policy) {
 function resultRow(result, { policy, scan }) {
   const reason = result.reasons?.length ? result.reasons.join(" ") : "No additional reason recorded.";
   const callPayload = result.call ? JSON.stringify(result.call, null, 2) : "No tool call was proposed.";
+  const remediation = result.remediation ?? buildRemediation({ result, policy });
+  const recommendationList = (remediation?.recommendations ?? []).map((item) => `<li><b>${escapeHtml(item.priority)} · ${escapeHtml(item.title)}</b><span>${escapeHtml(item.action)}</span><small>Implementation: ${escapeHtml(item.implementation)}</small><small>Verify: ${escapeHtml(item.verify)}</small></li>`).join("");
   return `<article class="finding ${isProtected(result) ? "finding--safe" : "finding--risk"}">
     <div class="finding__top"><span class="pill">${escapeHtml(severityFor(result))}</span><span class="status">${escapeHtml(verdictFor(result))}</span></div>
     <h3>${escapeHtml(result.title)}</h3>
     <p class="muted">${escapeHtml(result.category)} · scenario <code>${escapeHtml(result.scenarioId)}</code></p>
     <div class="grid"><div><b>Expected</b><span>${escapeHtml(result.expected)}</span></div><div><b>Observed</b><span>${escapeHtml(result.observed || "No tool call")}</span></div><div><b>Tool</b><span>${escapeHtml(result.call?.name || "None")}</span></div><div><b>Execution</b><span>${escapeHtml(result.guard?.execution || "Not executed")}</span></div></div>
-    <div class="section section--impact"><b>Commercial impact</b><p>${escapeHtml(businessImpactFor(result, policy))}</p></div>
+    <div class="section section--impact"><b>Commercial impact</b><p>${escapeHtml(remediation?.businessImpact ?? businessImpactFor(result, policy))}</p></div>
     <div class="section"><b>Evidence</b><p>${escapeHtml(reason)}</p>${result.call ? `<pre>${escapeHtml(callPayload)}</pre>` : ""}</div>
     <div class="section"><b>Reproduction recipe</b><p>${escapeHtml(reproductionFor(result, scan))}</p></div>
-    <div class="section"><b>Developer fix / Remediation</b><p>${escapeHtml(remediationFor(result, policy))}</p></div>
-    <div class="section section--acceptance"><b>Acceptance check</b><p>After the fix, the same scenario must produce the expected decision, <code>NOT_EXECUTED</code> for a blocked sensitive call, and no side effect in the customer executor.</p></div>
+    <div class="section"><b>Root cause</b><p>${escapeHtml(remediation?.rootCause)}</p><p>${escapeHtml(remediation?.summary)}</p></div>
+    <div class="section"><b>Developer fix / Remediation</b><ul class="remediation-list">${recommendationList}</ul></div>
+    <div class="section section--acceptance"><b>Acceptance check</b><ul class="remediation-list">${(remediation?.acceptanceCriteria ?? []).map((item) => `<li><span>${escapeHtml(item)}</span></li>`).join("")}</ul><p>Retest: ${escapeHtml(remediation?.retest?.label ?? "Run the same scenario again")}</p></div>
   </article>`;
 }
 

@@ -28,6 +28,7 @@ import {
 import { quickstartScenarioIds } from "../features/quickstart/domain.mjs";
 import { createIncidentNotification } from "../features/incidents/incident-repository.mjs";
 import { currentUsagePeriodStart, insertUsageMeasurement } from "../features/billing/usage-repository.mjs";
+import { buildRemediation, buildRemediationSummary } from "../features/reports/remediation.mjs";
 export { recordUsageMeasurement } from "../features/billing/usage-repository.mjs";
 
 function mapAgent(row) {
@@ -3634,19 +3635,24 @@ export async function getScan(scanId, workspaceId) {
     "SELECT * FROM scan_results WHERE scan_id = $1 ORDER BY created_at",
     [scanId],
   );
-  scan.results = details.rows.map((row) => ({
-    scenarioId: row.scenario_id,
-    title: row.title,
-    category: row.category,
-    expected: row.expected,
-    observed: row.observed,
-    status: row.status,
-    guard: row.guard_decision
-      ? { decision: row.guard_decision, execution: row.execution }
-      : null,
-    reasons: row.reasons,
-    call: row.tool_call,
-  }));
+  const workspacePolicy = await getPolicy(workspaceId);
+  scan.results = details.rows.map((row) => {
+    const result = {
+      scenarioId: row.scenario_id,
+      title: row.title,
+      category: row.category,
+      expected: row.expected,
+      observed: row.observed,
+      status: row.status,
+      guard: row.guard_decision
+        ? { decision: row.guard_decision, execution: row.execution }
+        : null,
+      reasons: row.reasons,
+      call: row.tool_call,
+    };
+    return { ...result, remediation: buildRemediation({ result, policy: workspacePolicy }) };
+  });
+  scan.remediationSummary = buildRemediationSummary(scan.results, workspacePolicy);
   scan.attackPaths = evaluateAttackPaths(scan.results);
   const progress = await query(
     "SELECT * FROM scan_progress WHERE scan_id = $1 ORDER BY ordinal",

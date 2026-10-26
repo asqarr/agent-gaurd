@@ -241,6 +241,7 @@ function WorkspaceView({
   selectedAgent,
   setSelectedAgent,
   onScan,
+  onRetest,
   scanning,
   onAgentCreated,
   onAgentUpdated,
@@ -262,6 +263,7 @@ function WorkspaceView({
   selectedAgent: string;
   setSelectedAgent: (id: string) => void;
   onScan: () => void;
+  onRetest: (agentId: string, scenarioId: string) => void;
   scanning: boolean;
   onAgentCreated: (agent: Agent) => void;
   onAgentUpdated: (agent: Agent) => void;
@@ -1038,6 +1040,7 @@ function WorkspaceView({
               {selectedScan ? (
                 <ScanEvidencePanel
                   scan={selectedScan}
+                  onRetest={(scenarioId) => onRetest(selectedScan.agentId, scenarioId)}
                   onClose={() => {
                     setSelectedScanId(null);
                     setSelectedScan(null);
@@ -1529,6 +1532,24 @@ function App() {
       setToast(
         caught instanceof Error ? caught.message : "Scan request failed",
       );
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function handleRemediationRetest(agentId: string, scenarioId: string) {
+    setActive("Scans");
+    setSelectedAgent(agentId);
+    setScanning(true);
+    setToast(`Retesting ${scenarioId} after remediation…`);
+    try {
+      const scan = await runScan(agentId, (nextScan) => setActiveScan(nextScan), [scenarioId]);
+      await refreshDashboard().catch(() => null);
+      setToast(scan.status === "completed"
+        ? `Retest complete · ${scan.score}/100 · ${scenarioId}`
+        : `Retest ${scan.status} · ${scan.error ?? "worker error"}`);
+    } catch (caught) {
+      setToast(caught instanceof Error ? caught.message : "Remediation retest failed.");
     } finally {
       setScanning(false);
     }
@@ -2177,6 +2198,7 @@ function App() {
             selectedAgent={selectedAgent}
             setSelectedAgent={setSelectedAgent}
             onScan={handleScan}
+            onRetest={handleRemediationRetest}
             scanning={scanning}
             onAgentCreated={handleAgentCreated}
             onAgentUpdated={handleAgentUpdated}

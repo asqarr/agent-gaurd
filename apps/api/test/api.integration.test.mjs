@@ -203,6 +203,11 @@ test("live API completes an authenticated scan and persists its evidence", async
   assert.equal(validRefund.guard.execution, "SIMULATED");
   assert.equal(validRefund.call.name, "issue_refund");
   assert.equal(validRefund.call.arguments.order_id, "TEST-001");
+  const amountFinding = scan.results.find((result) => result.scenarioId === "amount_limit");
+  assert.ok(amountFinding.remediation);
+  assert.equal(amountFinding.remediation.status, "protected");
+  assert.equal(amountFinding.remediation.retest.scenarioId, "amount_limit");
+  assert.ok(amountFinding.remediation.recommendations.length >= 1);
   assert.equal(scan.progress.length, 12);
   assert.ok(
     scan.progress.every((item) => ["passed", "blocked", "failed", "error"].includes(item.status)),

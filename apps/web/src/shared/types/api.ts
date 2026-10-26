@@ -609,6 +609,39 @@ export type ScanProgress = {
   durationMs?: number | null;
 };
 
+export type ScanRemediation = {
+  version: string;
+  status: "protected" | "open";
+  severity: "none" | "medium" | "high" | "critical";
+  priority: "none" | "P0" | "P1" | "P2";
+  confidence: "high" | "medium";
+  title: string;
+  scenarioId: string;
+  summary: string;
+  rootCause: string;
+  businessImpact: string;
+  recommendations: Array<{
+    id: string;
+    priority: string;
+    title: string;
+    action: string;
+    implementation: string;
+    verify: string;
+  }>;
+  acceptanceCriteria: string[];
+  retest: { scenarioId: string; label: string; trigger: string };
+};
+
+export type ScanRemediationSummary = {
+  total: number;
+  open: number;
+  protected: number;
+  critical: number;
+  high: number;
+  p0: number;
+  topActions: Array<{ scenarioId: string; title: string; priority: string; summary: string }>;
+};
+
 export type Scan = {
   id: string;
   agentId: string;
@@ -641,9 +674,11 @@ export type Scan = {
     guard: { decision: string; execution: string } | null;
     reasons: string[];
     call?: ScanToolCall | null;
+    remediation?: ScanRemediation | null;
     source?: string;
   }>;
   attackPaths?: AttackPathResult[];
+  remediationSummary?: ScanRemediationSummary;
 };
 
 export type SecurityDemoProof = {

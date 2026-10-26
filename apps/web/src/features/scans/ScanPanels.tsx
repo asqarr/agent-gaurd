@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../../shared/ui/Icon";
-import type { AttackPathResult, Scan, ScanProgress, SecurityDemoProof } from "../../shared/types/api";
+import type { AttackPathResult, Scan, ScanProgress, ScanRemediation, SecurityDemoProof } from "../../shared/types/api";
 
 type ScanResult = NonNullable<Scan["results"]>[number];
 
@@ -137,6 +137,34 @@ function formatDuration(durationMs: number | null) {
   return durationMs == null ? "—" : `${(durationMs / 1000).toFixed(1)}s`;
 }
 
+function RemediationCard({
+  remediation,
+  onRetest,
+}: {
+  remediation: ScanRemediation;
+  onRetest?: (scenarioId: string) => void;
+}) {
+  const isProtected = remediation.status === "protected";
+  return (
+    <div className={`scan-remediation scan-remediation--${isProtected ? "protected" : remediation.severity}`}>
+      <div className="scan-remediation__top">
+        <div>
+          <span className="eyebrow eyebrow--cyan">{isProtected ? "CONTROL CONFIRMED" : "REMEDIATION INTELLIGENCE"}</span>
+          <h5>{remediation.title}</h5>
+        </div>
+        <div className="scan-remediation__badges"><b>{remediation.priority}</b><b>{remediation.confidence} confidence</b></div>
+      </div>
+      <p className="scan-remediation__summary">{remediation.summary}</p>
+      <div className="scan-remediation__impact"><span>Root cause</span><strong>{remediation.rootCause}</strong><small>{remediation.businessImpact}</small></div>
+      <div className="scan-remediation__actions">
+        {remediation.recommendations.map((item) => <article key={item.id}><div><b>{item.priority} · {item.title}</b><span>{item.action}</span></div><small><strong>Implementation:</strong> {item.implementation}<br /><strong>Verify:</strong> {item.verify}</small></article>)}
+      </div>
+      <div className="scan-remediation__acceptance"><span>Acceptance criteria</span><ul>{remediation.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul></div>
+      {onRetest ? <button type="button" className="button button--subtle scan-remediation__retest" onClick={() => onRetest(remediation.retest.scenarioId)}><Icon name="activity" size={14} />{remediation.retest.label}</button> : null}
+    </div>
+  );
+}
+
 function AttackPathEvidence({ paths }: { paths: AttackPathResult[] }) {
   if (!paths.length) return null;
   return (
@@ -157,9 +185,11 @@ function AttackPathEvidence({ paths }: { paths: AttackPathResult[] }) {
 export function ScanEvidencePanel({
   scan,
   onClose,
+  onRetest,
 }: {
   scan: Scan;
   onClose: () => void;
+  onRetest?: (scenarioId: string) => void;
 }) {
   const results = scan.results ?? [];
   const statusLabel =
@@ -246,6 +276,11 @@ export function ScanEvidencePanel({
         <span><i className="scan-legend-dot scan-legend-dot--finding" />Finding = unsafe proposal was not blocked</span>
       </div>
 
+      {scan.remediationSummary ? <div className="scan-remediation-summary">
+        <div className="scan-remediation-summary__heading"><div><span className="eyebrow eyebrow--cyan">REMEDIATION QUEUE</span><strong>{scan.remediationSummary.open ? `${scan.remediationSummary.open} action${scan.remediationSummary.open === 1 ? "" : "s"} require attention` : "All tested controls are protected"}</strong></div><span>{scan.remediationSummary.p0 ? `${scan.remediationSummary.p0} P0` : "No P0"}</span></div>
+        <div className="scan-remediation-summary__metrics"><div><span>Protected</span><b>{scan.remediationSummary.protected}/{scan.remediationSummary.total}</b></div><div><span>Critical</span><b>{scan.remediationSummary.critical}</b></div><div><span>High</span><b>{scan.remediationSummary.high}</b></div><div><span>Top priority</span><b>{scan.remediationSummary.topActions[0]?.scenarioId ?? "—"}</b></div></div>
+      </div> : null}
+
       <AttackPathEvidence paths={scan.attackPaths ?? []} />
 
       {scan.error ? (
@@ -324,6 +359,7 @@ export function ScanEvidencePanel({
                   <pre>{JSON.stringify(result.call.arguments, null, 2)}</pre>
                 </div>
               ) : null}
+              {result.remediation ? <RemediationCard remediation={result.remediation} onRetest={onRetest} /> : null}
             </article>
           ))}
         </div>

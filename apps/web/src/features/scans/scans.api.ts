@@ -4,11 +4,12 @@ import type { Scan } from "../../shared/types/api";
 export async function runScan(
   agentId: string,
   onProgress?: (scan: Scan) => void,
+  scenarioIds?: string[],
 ): Promise<Scan> {
   const response = await request("/api/scans", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ agentId, trigger: "Manual" }),
+    body: JSON.stringify({ agentId, trigger: scenarioIds?.length ? `Remediation retest · ${scenarioIds.join(", ")}` : "Manual", scenarioIds }),
   });
   const scan: Scan = (await response.json()).scan;
   return waitForScan(scan, onProgress);
