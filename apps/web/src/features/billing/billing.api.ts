@@ -100,6 +100,22 @@ export async function verifyBillingPayment(orderId: string): Promise<{ verified:
   return response.json();
 }
 
+export async function reportBillingPaymentException(orderId: string, txHash: string): Promise<{
+  verified: boolean;
+  status: string;
+  order_id: string;
+  txHash?: string;
+  message?: string;
+  exception?: BillingPaymentException;
+}> {
+  const response = await request("/api/billing/payment-exceptions/report", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ order_id: orderId, tx_hash: txHash }),
+  });
+  return response.json();
+}
+
 export async function getBillingPaymentHistory(): Promise<BillingPayment[]> {
   const response = await request("/api/billing/payment-history");
   return (await response.json()).payments;

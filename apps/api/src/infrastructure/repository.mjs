@@ -942,12 +942,31 @@ function mapBillingPayout(row) {
   };
 }
 
-function uniqueTronPaymentAmountAtomic(priceUsdCents) {
+async function uniqueTronPaymentAmountAtomic(client, priceUsdCents) {
   const base = BigInt(usdtCentsToAtomic(priceUsdCents));
   // The six-decimal suffix is deliberately visible to the payer. It binds an
   // on-chain transfer to one checkout even when many customers buy the same
-  // plan at the same time.
-  return (base + BigInt(randomInt(1, 1_000))).toString();
+  // plan at the same time. A recent historical quote is also reserved for the
+  // full TRON lookback window, so a late transfer cannot be confused with a
+  // newer checkout after the active-checkout index stops covering the row.
+  const lookbackMs = Math.max(60_000, Number(config.tron.maxLookbackMs) || 30 * 24 * 60 * 60 * 1000);
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const candidate = (base + BigInt(randomInt(1, 1_000_000))).toString();
+    const collision = await client.query(
+      `SELECT 1
+       FROM billing_checkout_sessions
+       WHERE provider='tron-p2p'
+         AND payment_amount_atomic=$1
+         AND (
+           status IN ('waiting','awaiting_payment','confirming')
+           OR COALESCE(expires_at, created_at) >= NOW() - ($2::bigint * INTERVAL '1 millisecond')
+         )
+       LIMIT 1`,
+      [candidate, lookbackMs],
+    );
+    if (!collision.rowCount) return candidate;
+  }
+  throw billingError("CHECKOUT_QUOTE_UNAVAILABLE", "A unique TRON payment quote could not be created. Try again.");
 }
 
 // Direct checkout creation never changes entitlements. A verified on-chain event
@@ -997,7 +1016,7 @@ export async function createCheckoutSession({
           priceUsdCents = Number(plan.rows[0].price_usd_cents);
         }
         const paymentAmountAtomic = provider === "tron-p2p"
-          ? uniqueTronPaymentAmountAtomic(priceUsdCents)
+          ? await uniqueTronPaymentAmountAtomic(client, priceUsdCents)
           : null;
         const paymentAmountUsdt = paymentAmountAtomic ? atomicToUsdt(paymentAmountAtomic) : quoteAmount;
         const result = await client.query(

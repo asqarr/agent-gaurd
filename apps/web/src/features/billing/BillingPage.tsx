@@ -15,6 +15,7 @@ import {
   getBillingUsageMetrics,
   getOperationalObservability,
   attachBillingPaymentException,
+  reportBillingPaymentException,
   resolveBillingPaymentException,
   verifyBillingPayment,
 } from "./billing.api";
@@ -221,6 +222,9 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
   const [checkoutMessage, setCheckoutMessage] = useState("");
   const [directCheckout, setDirectCheckout] = useState<DirectBillingCheckout | null>(null);
   const [verificationBusy, setVerificationBusy] = useState(false);
+  const [reportTxHash, setReportTxHash] = useState("");
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportBusy, setReportBusy] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState<{
     planName: string;
     amount: string;
@@ -407,6 +411,8 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
     setBusyKey(`plan:${plan.id}`);
     setCheckoutError("");
     setCheckoutMessage("");
+    setReportOpen(false);
+    setReportTxHash("");
     try {
       const result = await createBillingCheckout(plan.id, undefined, plan.name, plan.priceUsdCents / 100);
       if ("change" in result) {
@@ -441,6 +447,8 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
     setBusyKey(`addon:${addon.id}`);
     setCheckoutError("");
     setCheckoutMessage("");
+    setReportOpen(false);
+    setReportTxHash("");
     try {
       const result = await createBillingAddonCheckout(addon.id, addon.kind === "security_audit" ? auditAgentId : undefined, serviceAcknowledged[addon.id] === true, addon.priceUsdCents / 100);
       setPaymentSuccess(null);
@@ -501,6 +509,39 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
       setCheckoutMessage(`${label} copied.`);
     } catch {
       setCheckoutError(`Copy ${label.toLowerCase()} manually: ${value}`);
+    }
+  }
+
+  async function reportDirectPayment() {
+    if (!directCheckout || !reportTxHash.trim()) {
+      setCheckoutError("Paste the TRON transaction hash before submitting a report.");
+      return;
+    }
+    setReportBusy(true);
+    setCheckoutError("");
+    try {
+      const result = await reportBillingPaymentException(directCheckout.order_id, reportTxHash.trim());
+      if (result.verified) {
+        const planName = directCheckout.checkout.checkoutType === "plan"
+          ? plans.find((plan) => plan.id === directCheckout.checkout.planId)?.name ?? "your selected plan"
+          : "your purchased capacity";
+        setDirectCheckout((current) => current ? { ...current, checkout: { ...current.checkout, status: "completed" } } : current);
+        setPaymentSuccess({ planName, amount: directCheckout.amountUSDT, orderId: directCheckout.order_id, txHash: result.txHash ?? "confirmed-on-chain" });
+        setCheckoutMessage("Payment confirmed on-chain. Your entitlement is active.");
+        clearRememberedCheckout();
+        setReportOpen(false);
+        setReportTxHash("");
+        await load();
+      } else {
+        if (result.exception) setPaymentExceptions((current) => [result.exception as BillingPaymentException, ...current.filter((item) => item.id !== result.exception?.id)]);
+        setCheckoutMessage(result.message ?? "The transfer was found and sent to the payment review queue. Your entitlement has not changed.");
+        setReportOpen(false);
+        setReportTxHash("");
+      }
+    } catch (caught) {
+      setCheckoutError(caught instanceof Error ? caught.message : "The transaction report could not be submitted.");
+    } finally {
+      setReportBusy(false);
     }
   }
 
@@ -598,6 +639,17 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
               </button>
             </div>
             <p className="billing-direct-checkout__wallet-help">You can send the exact USDT amount from ANY crypto wallet (Trust Wallet, Binance, Metamask, etc.) using the TRC20 network. Once sent, click 'I already paid' to verify your transaction via blockchain.</p>
+            {!['completed', 'paid'].includes(directCheckout.checkout.status) ? <>
+              <button type="button" className="text-button billing-direct-checkout__report-toggle" onClick={() => { setReportOpen((current) => !current); setCheckoutError(""); }}>
+                Sent a different amount? Report the transaction
+              </button>
+              {reportOpen ? <div className="billing-direct-checkout__report" role="group" aria-label="Report a payment exception">
+                <label htmlFor="billing-payment-tx-hash">Transaction hash</label>
+                <input id="billing-payment-tx-hash" value={reportTxHash} onChange={(event) => setReportTxHash(event.target.value)} placeholder="64-character TRON transaction hash" autoComplete="off" spellCheck={false} />
+                <small>We will verify the confirmed transfer on-chain. Underpaid, overpaid, or late transfers go to review; no plan is activated automatically from a mismatch.</small>
+                <button type="button" className="button button--subtle" disabled={reportBusy || !canManageBilling} onClick={() => void reportDirectPayment()}>{reportBusy ? "Checking transaction…" : "Submit for payment review"}</button>
+              </div> : null}
+            </> : null}
           </div>
         </div>
       </section> : null}

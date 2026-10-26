@@ -7,6 +7,7 @@ import { hashGrowthSourceKey, normalizePaymentGrowthProperties } from "../growth
 import { recordGrowthEvent } from "../growth-analytics/repository.mjs";
 import {
   atomicToUsdt,
+  findIncomingTransferByHash,
   findMatchingIncomingTransfer,
   getPublicTronAddress,
   getTronPaymentConfig,
@@ -88,6 +89,25 @@ function directPaymentDetails(checkout) {
     decimals: tron.decimals,
     expiresAt: checkout.expiresAt,
     paymentMode: "direct_p2p",
+  };
+}
+
+function paymentEventFromTransfer(checkout, transfer, tron) {
+  return {
+    provider: "crypto",
+    providerPaymentId: transfer.txHash,
+    checkoutSessionId: checkout.id,
+    providerCheckoutId: transfer.txHash,
+    status: "confirmed",
+    amount: atomicToUsdt(transfer.amountAtomic),
+    netAmount: atomicToUsdt(transfer.amountAtomic),
+    currency: "USDT",
+    network: "TRON",
+    walletAddress: tron.walletAddress,
+    txHash: transfer.txHash,
+    confirmations: 1,
+    paymentTimestamp: transfer.timestamp?.toISOString(),
+    rawPayload: transfer.raw,
   };
 }
 
@@ -251,28 +271,104 @@ async function handleVerifyPayment(req, res, next) {
     const expectedAtomic = checkout.paymentAmountAtomic ?? usdtCentsToAtomic(Number(checkout.amountUsdCents));
     const transfer = await findMatchingIncomingTransfer({ address: tron.walletAddress, expectedAtomic, createdAt: checkout.createdAt, expiresAt: checkout.expiresAt });
     if (!transfer) return res.json({ verified: false, status: checkout.status, order_id: orderId, message: "No confirmed matching USDT-TRC20 transfer was found yet." });
-    const event = {
-      provider: "crypto",
-      providerPaymentId: transfer.txHash,
-      checkoutSessionId: checkout.id,
-      providerCheckoutId: transfer.txHash,
-      status: "confirmed",
-      amount: atomicToUsdt(transfer.amountAtomic),
-      netAmount: atomicToUsdt(transfer.amountAtomic),
-      currency: "USDT",
-      network: "TRON",
-      walletAddress: tron.walletAddress,
-      txHash: transfer.txHash,
-      confirmations: 1,
-      paymentTimestamp: transfer.timestamp?.toISOString(),
-      rawPayload: transfer.raw,
-    };
+    const event = paymentEventFromTransfer(checkout, transfer, tron);
     const payment = await repository.applyVerifiedCryptoPayment(event, { paymentProvider: PAYMENT_PROVIDER, confirmedCheckoutStatus: "completed" });
     await recordVerifiedPaymentGrowth(event, payment);
     await recordBillingAudit(req, workspace, "billing.payment_verified", checkout.id, { provider: PAYMENT_PROVIDER, txHash: transfer.txHash, amount: event.amount, network: "TRON" });
     return res.json({ verified: true, status: "completed", order_id: orderId, txHash: transfer.txHash, payment });
   } catch (error) {
     if (["TRON_CONFIGURATION_ERROR", "TRON_AMOUNT_ERROR", "TRON_VERIFICATION_INPUT_ERROR", "TRON_TIME_WINDOW_ERROR"].includes(error?.code)) return res.status(503).json({ verified: false, error: "TRON payment verification is not configured correctly." });
+    if (["TRON_PROVIDER_ERROR", "TRON_INVALID_RESPONSE", "TRON_TIMEOUT", "TRON_HTTP_401", "TRON_HTTP_403", "TRON_HTTP_429", "TRON_HTTP_500", "TRON_HTTP_502", "TRON_HTTP_503", "TRON_HTTP_504"].includes(error?.code)) return res.status(502).json({ verified: false, error: "The public TRON indexer is temporarily unavailable. Try again shortly." });
+    if (["PAYMENT_AMOUNT_MISMATCH", "PAYMENT_TIME_INVALID", "PAYMENT_REPLAY"].includes(error?.code)) return res.status(409).json({ verified: false, error: error.message, code: error.code });
+    next(error);
+  }
+}
+
+async function handleReportPaymentException(req, res, next) {
+  try {
+    const workspace = workspaceId(req);
+    if (!workspace) return res.status(401).json({ error: "Authentication required." });
+    if (!canManageBilling(req)) return res.status(403).json({ error: "Only workspace owners and admins can report billing payments." });
+
+    const orderId = typeof req.body?.order_id === "string"
+      ? req.body.order_id.trim()
+      : typeof req.body?.checkoutId === "string"
+        ? req.body.checkoutId.trim()
+        : "";
+    const txHash = typeof req.body?.tx_hash === "string"
+      ? req.body.tx_hash.trim().toLowerCase()
+      : typeof req.body?.txHash === "string"
+        ? req.body.txHash.trim().toLowerCase()
+        : "";
+    if (!/^checkout-[a-f0-9-]{20,80}$/i.test(orderId)) return res.status(400).json({ error: "A valid order_id is required." });
+    if (!/^[a-f0-9]{64}$/i.test(txHash)) return res.status(400).json({ error: "A valid 64-character TRON transaction hash is required." });
+
+    const checkout = await repository.getCheckoutSession({ workspaceId: workspace, checkoutSessionId: orderId });
+    if (!checkout || checkout.provider !== PAYMENT_PROVIDER) return res.status(404).json({ error: "Direct TRON checkout not found." });
+    if (["completed", "paid"].includes(checkout.status)) return res.status(409).json({ error: "This checkout is already completed.", code: "CHECKOUT_ALREADY_COMPLETED" });
+    if (["canceled", "failed"].includes(checkout.status)) return res.status(410).json({ error: "This checkout is no longer payable." });
+
+    const tron = getTronPaymentConfig();
+    const transfer = await findIncomingTransferByHash({
+      address: tron.walletAddress,
+      txHash,
+      createdAt: checkout.createdAt,
+    });
+    if (!transfer) {
+      return res.status(422).json({
+        verified: false,
+        status: "not_found",
+        error: "That transaction was not found as a confirmed USDT-TRC20 transfer to the AgentGuard wallet after this checkout was created.",
+      });
+    }
+
+    const expectedAtomic = checkout.paymentAmountAtomic ?? usdtCentsToAtomic(Number(checkout.amountUsdCents));
+    const receivedAtomic = BigInt(transfer.amountAtomic);
+    const expected = BigInt(expectedAtomic);
+    const isLate = checkout.status === "expired"
+      || Boolean(checkout.expiresAt && transfer.timestamp > new Date(checkout.expiresAt));
+    if (!isLate && receivedAtomic === expected) {
+      const event = paymentEventFromTransfer(checkout, transfer, tron);
+      const payment = await repository.applyVerifiedCryptoPayment(event, { paymentProvider: PAYMENT_PROVIDER, confirmedCheckoutStatus: "completed" });
+      await recordVerifiedPaymentGrowth(event, payment);
+      await recordBillingAudit(req, workspace, "billing.payment_verified_from_report", checkout.id, { provider: PAYMENT_PROVIDER, txHash: transfer.txHash, amount: event.amount, network: "TRON" });
+      return res.json({ verified: true, status: "completed", order_id: orderId, txHash: transfer.txHash, payment });
+    }
+
+    const reason = isLate ? "late_payment" : receivedAtomic < expected ? "underpaid" : "overpaid";
+    const exception = await repository.recordPaymentException({
+      workspaceId: workspace,
+      checkoutSessionId: checkout.id,
+      provider: PAYMENT_PROVIDER,
+      network: "TRON",
+      txHash: transfer.txHash,
+      providerPaymentId: transfer.txHash,
+      senderAddress: transfer.from,
+      recipientAddress: transfer.to,
+      tokenContract: transfer.contract,
+      amountAtomic: transfer.amountAtomic,
+      amountUsdt: atomicToUsdt(transfer.amountAtomic),
+      decimals: transfer.decimals,
+      transferTimestamp: transfer.timestamp.toISOString(),
+      reason,
+      rawPayload: { ...transfer.raw, reportSource: "customer_submitted", reportedCheckoutId: checkout.id },
+    });
+    await recordBillingAudit(req, workspace, "billing.payment_exception_reported", exception.id, { checkoutId: checkout.id, reason, txHash: transfer.txHash, amount: atomicToUsdt(transfer.amountAtomic) }, "billing_payment_exception");
+    return res.status(202).json({
+      verified: false,
+      status: "manual_review",
+      order_id: orderId,
+      txHash: transfer.txHash,
+      exception,
+      message: reason === "underpaid"
+        ? "The transfer was found, but it is underpaid. Your entitlement remains unchanged until the payment is resolved."
+        : reason === "overpaid"
+          ? "The transfer was found, but it is overpaid. Your entitlement remains unchanged while the payment is reviewed."
+          : "The transfer was found after checkout expiry. Your entitlement remains unchanged until the payment is reviewed.",
+    });
+  } catch (error) {
+    if (error?.code === "TRON_REPORT_INPUT_ERROR") return res.status(400).json({ verified: false, error: "The TRON transaction report input is invalid." });
+    if (["TRON_CONFIGURATION_ERROR", "TRON_TIME_WINDOW_ERROR"].includes(error?.code)) return res.status(503).json({ verified: false, error: "TRON payment reporting is not configured correctly." });
     if (["TRON_PROVIDER_ERROR", "TRON_INVALID_RESPONSE", "TRON_TIMEOUT", "TRON_HTTP_401", "TRON_HTTP_403", "TRON_HTTP_429", "TRON_HTTP_500", "TRON_HTTP_502", "TRON_HTTP_503", "TRON_HTTP_504"].includes(error?.code)) return res.status(502).json({ verified: false, error: "The public TRON indexer is temporarily unavailable. Try again shortly." });
     if (["PAYMENT_AMOUNT_MISMATCH", "PAYMENT_TIME_INVALID", "PAYMENT_REPLAY"].includes(error?.code)) return res.status(409).json({ verified: false, error: error.message, code: error.code });
     next(error);
@@ -373,6 +469,7 @@ async function handleAttachPaymentException(req, res, next) {
 router.post("/checkout", requireAuth, handlePlanCheckout);
 router.post("/addons/checkout", requireAuth, handleAddonCheckout);
 router.post("/verify-payment", requireAuth, verifyRateLimit, handleVerifyPayment);
+router.post("/payment-exceptions/report", requireAuth, verifyRateLimit, handleReportPaymentException);
 router.get("/checkout/:checkoutId", requireAuth, handleCheckoutLookup);
 router.get("/payment-history", requireAuth, handlePaymentHistory);
 router.get("/payment-exceptions", requireAuth, handlePaymentExceptions);

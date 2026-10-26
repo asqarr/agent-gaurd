@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { normalizeVerifiedCryptoPayment } from "../src/features/billing/payment-provider.mjs";
 import { billingPlans, fullScanCredits, scanCreditsForScenarios, scenariosForPlan } from "../src/features/billing/domain.mjs";
-import { atomicToUsdt, findMatchingIncomingTransfer, usdtCentsToAtomic } from "../src/features/billing/tron-payment.mjs";
+import { atomicToUsdt, findIncomingTransferByHash, findMatchingIncomingTransfer, getTronPaymentConfig, usdtCentsToAtomic } from "../src/features/billing/tron-payment.mjs";
 
 test("crypto payment events are normalized without losing decimal precision", () => {
   const event = normalizeVerifiedCryptoPayment({
@@ -40,6 +40,21 @@ test("direct TRON amounts use exact USDT six-decimal atomic units", () => {
   assert.equal(usdtCentsToAtomic(14900), "149000000");
   assert.equal(atomicToUsdt("49000000"), "49");
   assert.equal(atomicToUsdt("123456"), "0.123456");
+});
+
+test("direct TRON payments reject a non-official token contract", () => {
+  const previousAddress = process.env.MY_TRONLINK_PUBLIC_ADDRESS;
+  const previousContract = process.env.TRON_USDT_CONTRACT;
+  process.env.MY_TRONLINK_PUBLIC_ADDRESS = "TDg6Vo6pkvKLy1jPpD4LBSLa3EwrVEk2JP";
+  process.env.TRON_USDT_CONTRACT = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb";
+  try {
+    assert.throws(() => getTronPaymentConfig(), { code: "TRON_CONFIGURATION_ERROR" });
+  } finally {
+    if (previousAddress === undefined) delete process.env.MY_TRONLINK_PUBLIC_ADDRESS;
+    else process.env.MY_TRONLINK_PUBLIC_ADDRESS = previousAddress;
+    if (previousContract === undefined) delete process.env.TRON_USDT_CONTRACT;
+    else process.env.TRON_USDT_CONTRACT = previousContract;
+  }
 });
 
 test("direct TRON verification accepts only an exact confirmed incoming USDT transfer", async () => {
@@ -140,6 +155,62 @@ test("direct TRON verification accepts the current TronScan transfer shape", asy
     delete process.env.TRON_USDT_CONTRACT;
     delete process.env.TRON_GRID_URL;
     delete process.env.TRONSCAN_API_URL;
+  }
+});
+
+test("direct TRON verification does not trust an unconfirmed TronScan transfer", async () => {
+  const originalFetch = globalThis.fetch;
+  const address = "TDg6Vo6pkvKLy1jPpD4LBSLa3EwrVEk2JP";
+  const contract = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+  process.env.MY_TRONLINK_PUBLIC_ADDRESS = address;
+  process.env.TRON_USDT_CONTRACT = contract;
+  process.env.TRON_GRID_URL = "https://grid.test";
+  process.env.TRONSCAN_API_URL = "https://scan.test";
+  globalThis.fetch = async (url) => {
+    if (String(url).startsWith("https://grid.test")) return new Response("rate limited", { status: 429 });
+    return new Response(JSON.stringify({ data: [
+      { hash: "h".repeat(64), id: contract, from: "Tsender", to: address, amount: "49000000", block_timestamp: Date.now(), contract_ret: "SUCCESS" },
+    ] }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const transfer = await findMatchingIncomingTransfer({
+      address,
+      expectedAtomic: "49000000",
+      createdAt: new Date(Date.now() - 60_000),
+      expiresAt: new Date(Date.now() + 600_000),
+    });
+    assert.equal(transfer, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.MY_TRONLINK_PUBLIC_ADDRESS;
+    delete process.env.TRON_USDT_CONTRACT;
+    delete process.env.TRON_GRID_URL;
+    delete process.env.TRONSCAN_API_URL;
+  }
+});
+
+test("direct TRON payment reports can locate a confirmed wrong-amount transfer for review", async () => {
+  const originalFetch = globalThis.fetch;
+  const address = "TDg6Vo6pkvKLy1jPpD4LBSLa3EwrVEk2JP";
+  const contract = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+  process.env.MY_TRONLINK_PUBLIC_ADDRESS = address;
+  process.env.TRON_USDT_CONTRACT = contract;
+  process.env.TRON_GRID_URL = "https://grid.test";
+  globalThis.fetch = async () => new Response(JSON.stringify({ data: [
+    { transaction_id: "a".repeat(64), token_info: { address: contract, decimals: 6 }, from: "Tsender", to: address, value: "48000000", block_timestamp: Date.now(), confirmed: true },
+  ] }), { status: 200, headers: { "Content-Type": "application/json" } });
+  try {
+    const transfer = await findIncomingTransferByHash({
+      address,
+      txHash: "a".repeat(64),
+      createdAt: new Date(Date.now() - 60_000),
+    });
+    assert.equal(transfer?.amountAtomic, "48000000");
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.MY_TRONLINK_PUBLIC_ADDRESS;
+    delete process.env.TRON_USDT_CONTRACT;
+    delete process.env.TRON_GRID_URL;
   }
 });
 

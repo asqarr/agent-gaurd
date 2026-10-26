@@ -107,7 +107,7 @@ function normalizeTransfer(item, source) {
     decimals,
     timestamp,
     confirmed: item.confirmed === undefined
-      ? true
+      ? source === "trongrid-confirmed"
       : item.confirmed === true || item.confirmed === 1 || item.confirmed === "true",
     status,
     source,
@@ -203,8 +203,8 @@ export function getTronPaymentConfig() {
   if (!isValidTronAddress(current.walletAddress)) {
     throw providerError("MY_TRONLINK_PUBLIC_ADDRESS is not a valid TRON address.", "TRON_CONFIGURATION_ERROR");
   }
-  if (!isValidTronAddress(current.usdtContract) && current.usdtContract !== TRON_USDT_CONTRACT) {
-    throw providerError("TRON_USDT_CONTRACT is invalid.", "TRON_CONFIGURATION_ERROR");
+  if (current.usdtContract !== TRON_USDT_CONTRACT) {
+    throw providerError("TRON_USDT_CONTRACT must be the official USDT contract on TRON mainnet.", "TRON_CONFIGURATION_ERROR");
   }
   return Object.freeze({
     walletAddress: current.walletAddress,
@@ -264,18 +264,50 @@ export async function fetchIncomingUsdtTransfers({
     throw providerError("The TRON payment time window is invalid.", "TRON_TIME_WINDOW_ERROR");
   }
   const contract = current.usdtContract;
+  if (contract !== TRON_USDT_CONTRACT) {
+    throw providerError("TRON_USDT_CONTRACT must be the official USDT contract on TRON mainnet.", "TRON_CONFIGURATION_ERROR");
+  }
   let items;
+  let source;
   try {
     const payload = await fetchJson(buildGridUrl({ address, contract, sinceMs: start, untilMs: end, baseUrl: current.gridUrl }), current);
     items = responseItems(payload);
     if (!items) throw providerError("The TRON Grid response has no transfer list.", "TRON_INVALID_RESPONSE");
+    source = "trongrid-confirmed";
   } catch (error) {
     if (!isRetryableProviderError(error)) throw error;
     const payload = await fetchJson(buildScanUrl({ address, contract, sinceMs: start, untilMs: end, baseUrl: current.scanUrl }), current);
     items = responseItems(payload);
     if (!items) throw providerError("The TronScan response has no transfer list.", "TRON_INVALID_RESPONSE");
+    source = "tronscan";
   }
-  return items.map((item) => normalizeTransfer(item, "trongrid-or-tronscan")).filter(Boolean);
+  return items.map((item) => normalizeTransfer(item, source)).filter(Boolean);
+}
+
+function isEligibleIncomingTransfer(transfer, {
+  address,
+  createdAt,
+  now = new Date(),
+} = {}) {
+  const recipient = String(address ?? "").trim();
+  const created = normalizeTimestamp(createdAt);
+  const current = normalizeTimestamp(now) ?? new Date();
+  const config = configuration();
+  if (!isValidTronAddress(recipient) || !created) return false;
+  if (!TX_HASH_PATTERN.test(transfer?.txHash ?? "")) return false;
+  if (!safeEqual(transfer?.to, recipient)) return false;
+  if (!transfer?.from || safeEqual(transfer.from, recipient)) return false;
+  if (!safeEqual(transfer.contract, config.usdtContract)) return false;
+  if (transfer.decimals !== TRON_USDT_DECIMALS) return false;
+  if (!normalizeRawAmount(transfer.amountAtomic) || BigInt(transfer.amountAtomic) <= 0n) return false;
+  if (!transfer.timestamp || transfer.timestamp < created) return false;
+  if (transfer.timestamp > new Date(current.getTime() + 5 * 60 * 1000)) return false;
+  if (!transfer.confirmed || ["REVERT", "FAILED", "FAIL"].includes(transfer.status)) return false;
+  return true;
+}
+
+export function isEligibleIncomingUsdtTransfer(transfer, options = {}) {
+  return isEligibleIncomingTransfer(transfer, options);
 }
 
 export function isMatchingIncomingTransfer(transfer, {
@@ -290,17 +322,9 @@ export function isMatchingIncomingTransfer(transfer, {
   const created = normalizeTimestamp(createdAt);
   const expiry = normalizeTimestamp(expiresAt);
   const current = normalizeTimestamp(now) ?? new Date();
-  const config = configuration();
-  if (!isValidTronAddress(recipient) || !expected || !created) return false;
-  if (!TX_HASH_PATTERN.test(transfer?.txHash ?? "")) return false;
-  if (!safeEqual(transfer?.to, recipient)) return false;
-  if (!transfer?.from || safeEqual(transfer.from, recipient)) return false;
-  if (!safeEqual(transfer.contract, config.usdtContract)) return false;
-  if (transfer.decimals !== TRON_USDT_DECIMALS || transfer.amountAtomic !== expected) return false;
-  if (!transfer.timestamp || transfer.timestamp < created) return false;
+  if (!expected || !isEligibleIncomingTransfer(transfer, { address: recipient, createdAt: created, now: current })) return false;
+  if (transfer.amountAtomic !== expected) return false;
   if (expiry && transfer.timestamp > expiry) return false;
-  if (transfer.timestamp > new Date(current.getTime() + 5 * 60 * 1000)) return false;
-  if (!transfer.confirmed || ["REVERT", "FAILED", "FAIL"].includes(transfer.status)) return false;
   return true;
 }
 
@@ -331,5 +355,33 @@ export async function findMatchingIncomingTransfer({
     expiresAt: expiry,
     now: current,
   })) ?? null;
+}
+
+/**
+ * Finds a specific confirmed transfer for the customer-report flow. This is
+ * deliberately amount-agnostic: the caller may report an under/overpayment,
+ * but the transfer must still be an eligible official USDT-TRC20 transfer to
+ * the AgentGuard wallet and must have happened after the checkout was created.
+ */
+export async function findIncomingTransferByHash({
+  address = getPublicTronAddress(),
+  txHash,
+  createdAt,
+  now = new Date(),
+} = {}) {
+  const normalizedHash = String(txHash ?? "").trim().toLowerCase();
+  const recipient = String(address ?? "").trim();
+  const created = normalizeTimestamp(createdAt);
+  const current = normalizeTimestamp(now) ?? new Date();
+  if (!isValidTronAddress(recipient) || !TX_HASH_PATTERN.test(normalizedHash) || !created) {
+    throw providerError("The TRON transaction report input is invalid.", "TRON_REPORT_INPUT_ERROR");
+  }
+  const transfers = await fetchIncomingUsdtTransfers({
+    address: recipient,
+    sinceMs: created.getTime(),
+    untilMs: current.getTime(),
+  });
+  return transfers.find((transfer) => transfer.txHash === normalizedHash
+    && isEligibleIncomingTransfer(transfer, { address: recipient, createdAt: created, now: current })) ?? null;
 }
 
