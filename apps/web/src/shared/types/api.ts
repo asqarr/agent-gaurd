@@ -539,6 +539,54 @@ export type BillingPaymentException = {
   updatedAt: string;
 };
 
+export type OperationalObservability = {
+  collectedAt: string;
+  windowMinutes: number;
+  queue: {
+    queued: number;
+    running: number;
+    failed: number;
+    staleWorkers: number;
+    oldestQueuedAgeMs: number;
+  };
+  scans: {
+    completed: number;
+    failed: number;
+    averageDurationMs: number;
+    p95DurationMs: number;
+    maxDurationMs: number;
+  };
+  reconciliation: {
+    runs: number;
+    failedRuns: number;
+    scanned: number;
+    completed: number;
+    exceptions: number;
+    averageDurationMs: number;
+    lastFinishedAt: string | null;
+  };
+  payments: {
+    total: number;
+    openExceptions: number;
+    underpaid: number;
+    unmatched: number;
+    late: number;
+    overpaid: number;
+  };
+  security: { adminsWithoutMfa: number };
+  api: {
+    startedAt: string;
+    uptimeSeconds: number;
+    requests: number;
+    errors: number;
+    fiveXxRate: number;
+    averageLatencyMs: number;
+    statusCounts: Record<string, number>;
+    topRoutes: Array<{ route: string; count: number }>;
+  };
+  alerts: Array<{ severity: "critical" | "warning"; code: string; message: string }>;
+};
+
 export type ScanToolCall = {
   name: string;
   arguments: Record<string, unknown>;

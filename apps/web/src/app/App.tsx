@@ -38,6 +38,8 @@ import type {
 } from "../shared/types/api";
 import { Icon, type IconName } from "../shared/ui/Icon";
 import { Dialog, type DialogRequest } from "../shared/ui/Dialog";
+import { UPGRADE_REQUIRED_EVENT, type UpgradeRequest } from "../shared/api/client";
+import { UpgradePrompt } from "../features/billing/UpgradePrompt";
 import { LiveScanPanel, ScanEvidencePanel } from "../features/scans/ScanPanels";
 
 const fallbackOverview: Overview = {
@@ -1421,6 +1423,16 @@ function App() {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<Incident[]>([]);
   const [incidentSummary, setIncidentSummary] = useState({ open: 0, unread: 0, critical: 0 });
+  const [upgradeRequest, setUpgradeRequest] = useState<UpgradeRequest | null>(null);
+
+  useEffect(() => {
+    const handleUpgradeRequired = (event: Event) => {
+      const request = (event as CustomEvent<UpgradeRequest>).detail;
+      if (request?.message && request.code) setUpgradeRequest(request);
+    };
+    window.addEventListener(UPGRADE_REQUIRED_EVENT, handleUpgradeRequired);
+    return () => window.removeEventListener(UPGRADE_REQUIRED_EVENT, handleUpgradeRequired);
+  }, []);
 
   async function refreshDashboard() {
     const { overview: nextOverview, agents: nextAgents } = await getDashboard();
@@ -1593,6 +1605,16 @@ function App() {
     setActive("Integrations");
     setShowConnectForm(true);
     setSearchOpen(false);
+  }
+
+  function openUpgradePlans() {
+    setUpgradeRequest(null);
+    setActive("Plans");
+    setSearchOpen(false);
+    setNotificationsOpen(false);
+    window.setTimeout(() => {
+      document.getElementById("billing-plans")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
   }
 
   function handlePolicyUpdated(nextPolicy: Overview["policy"]) {
@@ -2189,6 +2211,13 @@ function App() {
           </span>
         </footer>
       </main>
+      {upgradeRequest ? (
+        <UpgradePrompt
+          request={upgradeRequest}
+          onClose={() => setUpgradeRequest(null)}
+          onUpgrade={openUpgradePlans}
+        />
+      ) : null}
     </div>
   );
 }

@@ -13,12 +13,13 @@ import {
   getBillingServiceOrders,
   getBillingState,
   getBillingUsageMetrics,
+  getOperationalObservability,
   attachBillingPaymentException,
   resolveBillingPaymentException,
   verifyBillingPayment,
 } from "./billing.api";
 import type { DirectBillingCheckout } from "./billing.api";
-import type { Agent, BillingAddon, BillingPayment, BillingPaymentException, BillingPlan, BillingServiceOrder, BillingState, BillingUsageMetrics, SessionUser } from "../../shared/types/api";
+import type { Agent, BillingAddon, BillingPayment, BillingPaymentException, BillingPlan, BillingServiceOrder, BillingState, BillingUsageMetrics, OperationalObservability, SessionUser } from "../../shared/types/api";
 import { Icon } from "../../shared/ui/Icon";
 
 function formatPrice(plan: BillingPlan) {
@@ -50,6 +51,11 @@ function formatBytes(value: number) {
 
 function formatUsd(value: number) {
   return `$${value.toFixed(4)}`;
+}
+
+function formatDuration(value: number) {
+  if (value < 1000) return `${Math.round(value)}ms`;
+  return `${(value / 1000).toFixed(1)}s`;
 }
 
 function serviceStatusLabel(status: BillingServiceOrder["status"]) {
@@ -195,6 +201,7 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
   const [serviceOrders, setServiceOrders] = useState<BillingServiceOrder[]>([]);
   const [paymentHistory, setPaymentHistory] = useState<BillingPayment[]>([]);
   const [paymentExceptions, setPaymentExceptions] = useState<BillingPaymentException[]>([]);
+  const [operationalObservability, setOperationalObservability] = useState<OperationalObservability | null>(null);
   const [exceptionBusy, setExceptionBusy] = useState<string | null>(null);
   const [exceptionCheckoutIds, setExceptionCheckoutIds] = useState<Record<string, string>>({});
   const [auditAgentId, setAuditAgentId] = useState("");
@@ -238,6 +245,10 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
       ?? "your selected plan";
   }
 
+  function focusPlanOptions() {
+    document.getElementById("billing-plans")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   async function load() {
     setLoading(true);
     setError("");
@@ -265,6 +276,7 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
       ]);
       setPaymentHistory(history);
       setPaymentExceptions(exceptions);
+      setOperationalObservability(await getOperationalObservability().catch(() => null));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Billing information could not be loaded.");
     } finally {
@@ -571,7 +583,7 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
         <div className="billing-rail-badge"><Icon name="wallet" size={17} /><div><span>PAYMENT RAIL</span><strong>USDT on TRON</strong></div><small>Manual renewal only</small></div>
       </div>
 
-      {billing.usage.alerts.map((alert) => <div className={`billing-usage-alert billing-usage-alert--${alert.severity}`} key={`${alert.resource}-${alert.threshold}`}><Icon name={alert.severity === "critical" ? "activity" : "shield"} size={15} /><span>{alert.message}</span>{alert.addonRemaining > 0 ? <small>{alert.addonRemaining.toLocaleString()} extra available</small> : null}</div>)}
+      {billing.usage.alerts.map((alert) => <div className={`billing-usage-alert billing-usage-alert--${alert.severity}`} key={`${alert.resource}-${alert.threshold}`}><Icon name={alert.severity === "critical" ? "activity" : "shield"} size={15} /><span>{alert.message}</span>{alert.addonRemaining > 0 ? <small>{alert.addonRemaining.toLocaleString()} extra available</small> : null}{alert.severity !== "notice" ? <button type="button" className="text-button" onClick={focusPlanOptions}>Review plans <Icon name="arrow" size={12} /></button> : null}</div>)}
 
       {paymentExceptions.some((exception) => !["resolved", "refunded", "ignored"].includes(exception.status)) ? <section className="billing-exception-center panel">
         <div className="billing-exception-center__heading"><div><span className="eyebrow eyebrow--cyan">PAYMENT EXCEPTION CENTER</span><h3>A transfer needs a safe decision.</h3><p>AgentGuard found a confirmed USDT transfer that could not be applied automatically. No entitlement changes are made until the payment is matched or explicitly resolved.</p></div><Icon name="activity" size={18} /></div>
@@ -581,6 +593,11 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
           <button type="button" className="text-button" onClick={() => void copyPaymentValue(exception.txHash, "Transaction hash")}>Copy transaction hash</button>
           {canManageBilling ? <div className="billing-exception__actions"><label><span>Checkout ID for manual match</span><input value={exceptionCheckoutIds[exception.id] ?? exception.checkoutSessionId ?? ""} onChange={(event) => setExceptionCheckoutIds((current) => ({ ...current, [exception.id]: event.target.value }))} placeholder="checkout-…" /></label><div><button type="button" className="button button--primary" disabled={exceptionBusy !== null} onClick={() => void attachException(exception)}>{exceptionBusy === `${exception.id}:attach` ? "Attaching…" : "Attach & activate"}</button><button type="button" className="button button--subtle" disabled={exceptionBusy !== null} onClick={() => void resolveException(exception, "refund_required")}>{exceptionBusy === `${exception.id}:refund_required` ? "Saving…" : "Mark refund required"}</button><button type="button" className="button button--subtle" disabled={exceptionBusy !== null} onClick={() => void resolveException(exception, "ignored")}>Ignore</button></div></div> : <small className="billing-exception__note">Workspace admins are reviewing this transfer. If you sent the payment, keep the transaction hash available for support.</small>}
         </article>)}</div>
+      </section> : null}
+
+      {canManageBilling && paymentExceptions.some((exception) => ["resolved", "refunded", "ignored"].includes(exception.status)) ? <section className="billing-exception-history panel">
+        <div className="billing-exception-center__heading"><div><span className="eyebrow">PAYMENT DECISION HISTORY</span><h3>Closed exceptions remain auditable.</h3><p>Resolution, refund-required and ignore decisions are retained with the operator and timestamp.</p></div><span className="billing-payment-history__count">{paymentExceptions.filter((exception) => ["resolved", "refunded", "ignored"].includes(exception.status)).length} closed</span></div>
+        <div className="billing-exception-history__list">{paymentExceptions.filter((exception) => ["resolved", "refunded", "ignored"].includes(exception.status)).slice(0, 12).map((exception) => <article key={exception.id}><div><strong>{exceptionReasonLabel(exception.reason)}</strong><small>{shortPaymentValue(exception.txHash)} · {formatDate(exception.resolvedAt ?? exception.updatedAt)}</small></div><b className={`billing-exception__status billing-exception__status--${exception.status}`}>{paymentStatusLabel(exception.status)}</b><span>{exception.resolutionNote || "No operator note"}</span></article>)}</div>
       </section> : null}
 
       {paymentHistory.length ? <section className="billing-payment-history panel">
@@ -623,6 +640,19 @@ export function BillingPage({ authUser }: { authUser: SessionUser | null }) {
           <div className="billing-ops-card__footer"><span>Estimated current footprint cost</span><strong>{formatUsd(usageMetrics.estimatedCostUsd.total)}</strong><small>Compute for this period + monthly storage run-rate. Estimates use configured infrastructure rates.</small></div>
         </section>
       </div> : null}
+
+      {canManageBilling && operationalObservability ? <section className="billing-observability panel">
+        <div className="billing-ops-card__heading"><div><span className="eyebrow eyebrow--cyan">OPERATIONS MONITOR</span><h3>Production signals in one view.</h3><p>Live process metrics plus database-backed queue, scan and reconciliation health. Window: {operationalObservability.windowMinutes} minutes.</p></div><Icon name="activity" size={18} /></div>
+        {operationalObservability.alerts.length ? <div className="billing-observability__alerts">{operationalObservability.alerts.map((alert) => <div className={`billing-observability__alert billing-observability__alert--${alert.severity}`} key={alert.code}><strong>{alert.severity.toUpperCase()}</strong><span>{alert.message}</span></div>)}</div> : <div className="billing-observability__clear">No active operational alerts in the selected window.</div>}
+        <div className="billing-observability__grid">
+          <div><span>Queue backlog</span><strong>{operationalObservability.queue.queued}</strong><small>{operationalObservability.queue.running} running · {operationalObservability.queue.staleWorkers} stale</small></div>
+          <div><span>Scan duration p95</span><strong>{formatDuration(operationalObservability.scans.p95DurationMs)}</strong><small>{operationalObservability.scans.completed} completed · {operationalObservability.scans.failed} failed</small></div>
+          <div><span>Reconciliation</span><strong>{operationalObservability.reconciliation.failedRuns} failures</strong><small>{operationalObservability.reconciliation.runs} runs · {operationalObservability.reconciliation.exceptions} exceptions</small></div>
+          <div><span>Payment exceptions</span><strong>{operationalObservability.payments.openExceptions} open</strong><small>{operationalObservability.payments.underpaid} underpaid · {operationalObservability.payments.unmatched} unmatched</small></div>
+          <div><span>API 5xx rate</span><strong>{(operationalObservability.api.fiveXxRate * 100).toFixed(2)}%</strong><small>{operationalObservability.api.requests} requests · {operationalObservability.api.averageLatencyMs}ms average</small></div>
+          <div><span>Admin MFA</span><strong>{operationalObservability.security.adminsWithoutMfa ? `${operationalObservability.security.adminsWithoutMfa} missing` : "Protected"}</strong><small>TOTP coverage for owners and admins</small></div>
+        </div>
+      </section> : null}
 
       {serviceOrders.length ? <section className="billing-service-orders panel">
         <div className="billing-addons__heading"><div><span className="eyebrow eyebrow--cyan">SERVICE ENGAGEMENTS</span><h3>Human work stays scoped and trackable.</h3><p>Audit and implementation support are separate engagements with their own deliverables and acceptance terms.</p></div></div>

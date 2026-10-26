@@ -1,5 +1,5 @@
 import { request } from "../../shared/api/client";
-import type { BillingAddon, BillingCheckout, BillingPayment, BillingPaymentException, BillingPlan, BillingServiceOrder, BillingState, BillingUsageMetrics } from "../../shared/types/api";
+import type { BillingAddon, BillingCheckout, BillingPayment, BillingPaymentException, BillingPlan, BillingServiceOrder, BillingState, BillingUsageMetrics, OperationalObservability } from "../../shared/types/api";
 
 export async function getBillingState(): Promise<BillingState> {
   const response = await request("/api/billing");
@@ -108,6 +108,11 @@ export async function getBillingPaymentHistory(): Promise<BillingPayment[]> {
 export async function getBillingPaymentExceptions(): Promise<BillingPaymentException[]> {
   const response = await request("/api/billing/payment-exceptions");
   return (await response.json()).exceptions;
+}
+
+export async function getOperationalObservability(): Promise<OperationalObservability> {
+  const response = await request("/api/ops/observability");
+  return response.json();
 }
 
 export async function resolveBillingPaymentException(exceptionId: string, action: "refund_required" | "resolved" | "ignored" | "refunded", note?: string): Promise<BillingPaymentException> {

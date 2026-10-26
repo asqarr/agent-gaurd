@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { config } from "../../core/config.mjs";
 import {
   claimNextJob,
@@ -8,24 +9,25 @@ import {
   retryScan,
   touchScanJob,
   updateScanProgress,
-} from "../../infrastructure/repository.mjs";
+} from "./scan-queue-repository.mjs";
 import { runAgentScan } from "./scan-engine.mjs";
 import { requestAgentScenario } from "../agents/agent-client.mjs";
 import { scenarios } from "../catalog/domain.mjs";
 import { scanCreditsForScenarios } from "../billing/domain.mjs";
 import { recordGrowthEvent } from "../growth-analytics/repository.mjs";
 
-let processing = false;
-
-export async function processNextScanJob() {
-  if (processing) return false;
-  const job = await claimNextJob(config.scanJobLeaseMs, config.scanMaxAttempts);
+export async function processNextScanJob({ workerId = `scan-worker-${randomUUID()}` } = {}) {
+  const job = await claimNextJob({
+    leaseMs: config.scanJobLeaseMs,
+    maxAttempts: config.scanMaxAttempts,
+    workerId,
+  });
   if (!job) return false;
 
-  processing = true;
   const startedClock = process.hrtime.bigint();
   const cpuStart = process.cpuUsage();
   const rssStart = process.memoryUsage().rss;
+  const leaseToken = job.lease_token;
   let context = null;
   let measurementUnits = 0;
   const buildMeasurement = () => {
@@ -40,6 +42,7 @@ export async function processNextScanJob() {
     };
   };
   let heartbeat;
+
   try {
     context = await getWorkerContext(job.scan_id);
     if (!context) throw new Error("Scan context no longer exists.");
@@ -48,39 +51,31 @@ export async function processNextScanJob() {
       error.code = "AGENT_QUARANTINED";
       throw error;
     }
-    await markScanRunning(job.scan_id);
-    const selectedScenarioIds = Array.isArray(context.scenario_ids)
-      ? context.scenario_ids
-      : [];
+    await markScanRunning({ scanId: job.scan_id, leaseToken });
+    const selectedScenarioIds = Array.isArray(context.scenario_ids) ? context.scenario_ids : [];
     const selectedScenarios = selectedScenarioIds.length
-      ? selectedScenarioIds
-        .map((scenarioId) => scenarios.find((scenario) => scenario.id === scenarioId))
-        .filter(Boolean)
+      ? selectedScenarioIds.map((scenarioId) => scenarios.find((scenario) => scenario.id === scenarioId)).filter(Boolean)
       : scenarios;
-    if (!selectedScenarios.length) {
-      throw new Error("Scan has no valid scenario definitions.");
-    }
+    if (!selectedScenarios.length) throw new Error("Scan has no valid scenario definitions.");
     measurementUnits = scanCreditsForScenarios(selectedScenarios);
-    heartbeat = setInterval(
-      () => {
-        touchScanJob(job.id).catch((error) =>
-          console.error("Scan job heartbeat error:", error),
-        );
-      },
-      Math.max(1000, Math.floor(config.scanJobLeaseMs / 3)),
-    );
+
+    heartbeat = setInterval(() => {
+      void touchScanJob({ jobId: job.id, leaseToken }).catch((error) => {
+        console.error(JSON.stringify({
+          level: "error",
+          event: "scan_worker_heartbeat_failed",
+          jobId: job.id,
+          scanId: job.scan_id,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      });
+    }, Math.max(1000, Math.floor(config.scanJobLeaseMs / 3)));
 
     const scanPolicy = context.mode === "demo_simulator"
       ? { maxAmount: 50, maxAgeDays: 14, currency: "USD" }
       : {
-        maxAmount: Math.min(
-          Number(context.max_amount ?? 50),
-          Number(context.contract_max_refund_amount ?? context.max_amount ?? 50),
-        ),
-        maxAgeDays: Math.min(
-          Number(context.max_age_days ?? 14),
-          Number(context.contract_max_order_age_days ?? context.max_age_days ?? 14),
-        ),
+        maxAmount: Math.min(Number(context.max_amount ?? 50), Number(context.contract_max_refund_amount ?? context.max_amount ?? 50)),
+        maxAgeDays: Math.min(Number(context.max_age_days ?? 14), Number(context.contract_max_order_age_days ?? context.max_age_days ?? 14)),
         currency: context.currency ?? "USD",
       };
     const outcome = await runAgentScan({
@@ -91,23 +86,21 @@ export async function processNextScanJob() {
         encryptedApiKey: context.encrypted_api_key,
       },
       policy: scanPolicy,
-      allowedToolIds: Array.isArray(context.contract_allowed_tool_ids)
-        ? context.contract_allowed_tool_ids
-        : undefined,
+      allowedToolIds: Array.isArray(context.contract_allowed_tool_ids) ? context.contract_allowed_tool_ids : undefined,
       requestScenario: requestAgentScenario,
       scenarios: selectedScenarios,
-      onScenarioUpdate: (progress) =>
-        updateScanProgress({
-          scanId: job.scan_id,
-          status: progress.status,
-          scenario: progress.scenario,
-          result: progress.result,
-          error: progress.error,
-          durationMs: progress.durationMs,
-        }),
+      onScenarioUpdate: (progress) => updateScanProgress({
+        scanId: job.scan_id,
+        leaseToken,
+        status: progress.status,
+        scenario: progress.scenario,
+        result: progress.result,
+        error: progress.error,
+        durationMs: progress.durationMs,
+      }),
     });
     outcome.metrics = buildMeasurement();
-    await completeScan(job.scan_id, outcome);
+    await completeScan({ scanId: job.scan_id, leaseToken, outcome });
     try {
       await recordGrowthEvent({
         eventName: "business.first_scan_completed",
@@ -125,31 +118,81 @@ export async function processNextScanJob() {
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (error?.code === "AGENT_QUARANTINED") {
-      await failScan(job.scan_id, message, buildMeasurement());
-    } else if (job.attempts < config.scanMaxAttempts) {
-      const delayMs =
-        config.scanRetryBaseMs * 2 ** Math.max(0, job.attempts - 1);
-      await retryScan(job.scan_id, message, delayMs);
-    } else {
-      await failScan(job.scan_id, message, buildMeasurement());
+    if (error?.code === "SCAN_LEASE_LOST") {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "scan_worker_lease_lost",
+        jobId: job.id,
+        scanId: job.scan_id,
+      }));
+      return false;
+    }
+    try {
+      if (error?.code === "AGENT_QUARANTINED") {
+        await failScan({ scanId: job.scan_id, leaseToken, errorMessage: message, metrics: buildMeasurement() });
+      } else if (job.attempts < config.scanMaxAttempts) {
+        const delayMs = config.scanRetryBaseMs * 2 ** Math.max(0, job.attempts - 1);
+        await retryScan({ scanId: job.scan_id, leaseToken, errorMessage: message, delayMs });
+      } else {
+        await failScan({ scanId: job.scan_id, leaseToken, errorMessage: message, metrics: buildMeasurement() });
+      }
+    } catch (finalizationError) {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "scan_worker_finalization_failed",
+        jobId: job.id,
+        scanId: job.scan_id,
+        error: finalizationError instanceof Error ? finalizationError.message : String(finalizationError),
+      }));
     }
     return true;
   } finally {
     if (heartbeat) clearInterval(heartbeat);
-    processing = false;
   }
 }
 
-export function startScanWorker() {
-  const timer = setInterval(() => {
-    processNextScanJob().catch((error) =>
-      console.error("Scan worker error:", error),
-    );
-  }, config.scanWorkerIntervalMs);
+export function startScanWorker({ concurrency = config.scanWorkerConcurrency } = {}) {
+  const workerPrefix = `scan-worker-${randomUUID()}`;
+  const active = new Set();
+  let stopped = false;
+  let slot = 0;
+
+  const poll = () => {
+    while (!stopped && active.size < concurrency) {
+      const workerId = `${workerPrefix}-${slot++}`;
+      const jobPromise = processNextScanJob({ workerId })
+        .catch((error) => {
+          console.error(JSON.stringify({
+            level: "error",
+            event: "scan_worker_poll_failed",
+            workerId,
+            error: error instanceof Error ? error.message : String(error),
+          }));
+          return false;
+        });
+      active.add(jobPromise);
+      jobPromise.then(
+        () => active.delete(jobPromise),
+        () => active.delete(jobPromise),
+      );
+    }
+  };
+
+  const timer = setInterval(poll, config.scanWorkerIntervalMs);
   timer.unref?.();
-  processNextScanJob().catch((error) =>
-    console.error("Initial scan worker error:", error),
-  );
-  return timer;
+  poll();
+
+  return {
+    stop: async () => {
+      stopped = true;
+      clearInterval(timer);
+      if (!active.size) return;
+      const timeout = new Promise((resolve) => {
+        const handle = setTimeout(resolve, config.scanWorkerShutdownTimeoutMs);
+        handle.unref?.();
+      });
+      await Promise.race([Promise.allSettled([...active]), timeout]);
+    },
+    activeCount: () => active.size,
+  };
 }

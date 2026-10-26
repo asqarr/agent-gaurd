@@ -12,6 +12,7 @@
     "test:auth-hardening": "node --test test/auth-hardening.integration.test.mjs",
     "test:security-boundaries": "node --test test/security-boundaries.integration.test.mjs",
     "test:billing-business": "node --test test/billing-business.integration.test.mjs",
+    "test:queue-integration": "node --test test/queue-reconciliation.integration.test.mjs",
     "test:agent-client": "node scripts/test-agent-client.mjs"
   },
   "dependencies": {

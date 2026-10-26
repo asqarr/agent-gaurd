@@ -21,6 +21,7 @@
     "test:runtime-gateway": "npm --workspace apps/api run test:runtime-gateway",
     "test:security-boundaries": "npm --workspace apps/api run test:security-boundaries",
     "test:billing-business": "npm --workspace apps/api run test:billing-business",
+    "test:queue-integration": "npm --workspace apps/api run test:queue-integration",
     "growth:report": "node apps/api/scripts/growth-report.mjs",
     "growth:mark-pilot": "node apps/api/scripts/mark-pilot.mjs",
     "test:sdk": "node --test packages/agentguard-sdk/test/sdk.test.mjs",

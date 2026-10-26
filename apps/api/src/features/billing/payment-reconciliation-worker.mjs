@@ -1,5 +1,7 @@
 import { config } from "../../core/config.mjs";
+import { withAdvisoryLock } from "../../core/db.mjs";
 import * as repository from "../../infrastructure/repository.mjs";
+import * as reconciliationRepository from "./reconciliation-repository.mjs";
 import { hashGrowthSourceKey, normalizePaymentGrowthProperties } from "../growth-analytics/domain.mjs";
 import { recordGrowthEvent } from "../growth-analytics/repository.mjs";
 import {
@@ -9,6 +11,11 @@ import {
   isMatchingIncomingTransfer,
   usdtCentsToAtomic,
 } from "./tron-payment.mjs";
+import {
+  completeReconciliationRun,
+  failReconciliationRun,
+  startReconciliationRun,
+} from "./reconciliation-repository.mjs";
 
 const PAYMENT_PROVIDER = "tron-p2p";
 
@@ -41,9 +48,15 @@ function expectedAtomic(checkout) {
 }
 
 function usableTransfer(transfer) {
+  let positiveAmount = false;
+  try {
+    positiveAmount = BigInt(transfer?.amountAtomic ?? 0) > 0n;
+  } catch {
+    positiveAmount = false;
+  }
   return Boolean(
-    transfer?.txHash
-      && transfer?.amountAtomic
+    /^[a-f0-9]{64}$/i.test(transfer?.txHash ?? "")
+      && positiveAmount
       && transfer?.timestamp
       && transfer?.confirmed
       && transfer.status !== "REVERT"
@@ -86,7 +99,11 @@ function likelyAmountMismatch(transfer, checkout) {
   }
 }
 
-function exceptionReason(transfer, candidates, settledCheckoutIds) {
+function exceptionReason(transfer, candidates, settledCheckoutIds, tron) {
+  if (transfer.to !== tron.walletAddress) return { reason: "wrong_recipient", checkout: null };
+  if (transfer.contract !== tron.usdtContract || transfer.decimals !== tron.decimals) {
+    return { reason: "wrong_token", checkout: null };
+  }
   const late = candidates.find((checkout) => {
     if (settledCheckoutIds.has(checkout.id) || checkout.status !== "expired" || !checkout.expiresAt) return false;
     return transfer.timestamp > new Date(checkout.expiresAt)
@@ -110,21 +127,21 @@ function exceptionReason(transfer, candidates, settledCheckoutIds) {
   return { reason: "unmatched_order", checkout: null };
 }
 
-export async function processCryptoPaymentReconciliation() {
-  const expired = await repository.expirePendingTronCheckouts();
-  const pending = await repository.listPendingTronCheckouts({ limit: config.billingReconciliationBatchSize });
+async function reconcileCryptoPayments() {
+  const expired = await reconciliationRepository.expirePendingTronCheckouts();
+  const pending = await reconciliationRepository.listPendingTronCheckouts({ limit: config.billingReconciliationBatchSize });
 
   const tron = getTronPaymentConfig();
   const earliestCreatedAt = pending.reduce((earliest, checkout) => {
     const createdAt = new Date(checkout.createdAt);
     return createdAt < earliest ? createdAt : earliest;
   }, new Date(Date.now() - config.tron.maxLookbackMs));
-  const candidates = await repository.listRecentTronCheckoutCandidates({
+  const candidates = await reconciliationRepository.listRecentTronCheckoutCandidates({
     sinceMs: earliestCreatedAt.getTime(),
     untilMs: Date.now(),
     limit: Math.max(100, config.billingReconciliationBatchSize * 10),
   });
-  const knownHashes = await repository.listKnownTronTransactionHashes({ sinceMs: earliestCreatedAt.getTime() });
+  const knownHashes = await reconciliationRepository.listKnownTronTransactionHashes({ sinceMs: earliestCreatedAt.getTime() });
   const transfers = await fetchIncomingUsdtTransfers({
     address: tron.walletAddress,
     sinceMs: earliestCreatedAt.getTime(),
@@ -179,7 +196,7 @@ export async function processCryptoPaymentReconciliation() {
     }
 
     try {
-      const classified = exceptionReason(transfer, candidates, settledCheckoutIds);
+      const classified = exceptionReason(transfer, candidates, settledCheckoutIds, tron);
       const exception = await repository.recordPaymentException({
         workspaceId: classified.checkout?.workspaceId ?? null,
         checkoutSessionId: classified.checkout?.id ?? null,
@@ -220,6 +237,42 @@ export async function processCryptoPaymentReconciliation() {
   }
 
   return { expired, scanned: transfers.length, completed, exceptions };
+}
+
+export async function processCryptoPaymentReconciliation() {
+  const locked = await withAdvisoryLock(config.billingReconciliationLockKey, async () => {
+    const run = await startReconciliationRun({
+      provider: PAYMENT_PROVIDER,
+      metadata: { worker: "api", mode: "polling" },
+    });
+    try {
+      const result = await reconcileCryptoPayments();
+      await completeReconciliationRun({
+        runId: run.id,
+        result,
+        metadata: { provider: PAYMENT_PROVIDER, source: "TRON indexed transfers" },
+      });
+      return { ...result, runId: run.id, skipped: false };
+    } catch (error) {
+      await failReconciliationRun({
+        runId: run.id,
+        error,
+        metadata: { provider: PAYMENT_PROVIDER },
+      }).catch((recordError) => {
+        console.error(JSON.stringify({
+          level: "error",
+          event: "billing.reconciliation_run_record_failed",
+          runId: run.id,
+          error: recordError instanceof Error ? recordError.message : String(recordError),
+        }));
+      });
+      throw error;
+    }
+  });
+  if (!locked.acquired) {
+    return { skipped: true, reason: "reconciliation_lock_busy" };
+  }
+  return locked.value;
 }
 
 export function startPaymentReconciliationWorker() {

@@ -3,17 +3,52 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import jwt from "jsonwebtoken";
+import { closeDatabase, query } from "../src/core/db.mjs";
 
 dotenv.config({
   path: resolve(dirname(fileURLToPath(import.meta.url)), "../../../.env"),
 });
 
 const baseUrl = process.env.AGENTGUARD_API_URL ?? "http://127.0.0.1:4100";
-const email = process.env.DEV_SEED_EMAIL ?? "demo@agentguard.local";
-const password = process.env.DEV_SEED_PASSWORD ?? "change-me-locally";
+let email;
+let password;
+let workspaceId;
+let isolatedWorkspaceReady = false;
 
 let cookie;
+
+async function ensureIsolatedWorkspace() {
+  if (isolatedWorkspaceReady) return;
+  email = `integration-${randomUUID()}@agentguard.local`;
+  password = `Integration-${randomUUID()}!`;
+  const register = await fetch(`${baseUrl}/api/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email,
+      password,
+      name: "Integration Test Owner",
+      workspaceName: `Integration ${randomUUID().slice(0, 8)}`,
+    }),
+  });
+  const body = await register.json();
+  assert.equal(register.status, 201, body?.error ?? "isolated integration registration failed");
+  workspaceId = body.user.workspaceId;
+  // Give this run the same paid entitlement as the production-like scan
+  // assertions, without mutating the shared development seed workspace.
+  await query(
+    `UPDATE workspace_subscriptions
+     SET plan_id='team', status='active', billing_provider='integration',
+         current_period_start=DATE_TRUNC('month', NOW()),
+         current_period_end=DATE_TRUNC('month', NOW()) + INTERVAL '1 month',
+         updated_at=NOW()
+     WHERE workspace_id=$1`,
+    [workspaceId],
+  );
+  isolatedWorkspaceReady = true;
+}
 
 async function api(path, init = {}) {
   const headers = new Headers(init.headers);
@@ -29,6 +64,7 @@ async function api(path, init = {}) {
 }
 
 test("live API completes an authenticated scan and persists its evidence", async () => {
+  await ensureIsolatedWorkspace();
   const health = await api("/api/health");
   assert.equal(health.body.status, "ok");
 
@@ -78,6 +114,19 @@ test("live API completes an authenticated scan and persists its evidence", async
   const session = await api("/api/auth/me");
   assert.equal(session.body.user.id, login.body.user.id);
 
+  const bootstrapAgent = await api("/api/agents", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: "Integration storefront agent",
+      endpoint: null,
+      provider: "Integration provider",
+      model: "integration-model",
+      toolIds: ["get_order", "issue_refund"],
+    }),
+  });
+  assert.equal(bootstrapAgent.body.agent.name, "Integration storefront agent");
+
   const blockedOrigin = await fetch(`${baseUrl}/api/settings/profile`, {
     method: "PATCH",
     headers: {
@@ -97,6 +146,9 @@ test("live API completes an authenticated scan and persists its evidence", async
   assert.ok(billing.body.usage.scanCreditsRemaining <= billing.body.usage.scanCreditsIncluded);
   const plans = await api("/api/billing/plans");
   assert.deepEqual(plans.body.plans.map((plan) => plan.id), ["free", "builder", "team", "agency"]);
+  const observability = await api("/api/ops/observability");
+  assert.equal(typeof observability.body.queue.queued, "number");
+  assert.equal(typeof observability.body.api.fiveXxRate, "number");
 
   const agents = (await api("/api/agents")).body.agents;
   assert.ok(agents.length > 0, "seed workspace should contain an agent");
@@ -465,4 +517,9 @@ test("live API manages an agent without exposing its secret", async () => {
     headers: { Cookie: cookie },
   });
   assert.equal(deleted.status, 204);
+});
+
+test.after(async () => {
+  if (workspaceId) await query("DELETE FROM workspaces WHERE id=$1", [workspaceId]);
+  await closeDatabase();
 });

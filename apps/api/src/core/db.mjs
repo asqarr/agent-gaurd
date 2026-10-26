@@ -28,6 +28,28 @@ export async function withTransaction(callback) {
   }
 }
 
+export async function withAdvisoryLock(lockKey, callback) {
+  const client = await pool.connect();
+  let acquired = false;
+  try {
+    const result = await client.query(
+      "SELECT pg_try_advisory_lock(hashtext($1)) AS acquired",
+      [String(lockKey)],
+    );
+    acquired = result.rows[0]?.acquired === true;
+    if (!acquired) return { acquired: false, value: null };
+    const value = await callback();
+    return { acquired: true, value };
+  } finally {
+    if (acquired) {
+      await client
+        .query("SELECT pg_advisory_unlock(hashtext($1))", [String(lockKey)])
+        .catch(() => {});
+    }
+    client.release();
+  }
+}
+
 export async function migrate() {
   const client = await pool.connect();
   try {

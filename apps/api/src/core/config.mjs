@@ -88,6 +88,11 @@ const requiredSecret = (name, fallback) => {
   return value;
 };
 
+const requiredProductionValue = (name, fallback) => {
+  const value = process.env[name] ?? fallback;
+  return value;
+};
+
 export const config = Object.freeze({
   nodeEnv: process.env.NODE_ENV ?? "development",
   host: process.env.API_HOST ?? (isProduction ? "0.0.0.0" : "127.0.0.1"),
@@ -134,6 +139,14 @@ export const config = Object.freeze({
     min: 100,
     max: 60000,
   }),
+  scanWorkerConcurrency: positiveInteger("SCAN_WORKER_CONCURRENCY", 2, {
+    min: 1,
+    max: 16,
+  }),
+  scanWorkerShutdownTimeoutMs: positiveInteger("SCAN_WORKER_SHUTDOWN_TIMEOUT_MS", 25000, {
+    min: 1000,
+    max: 120000,
+  }),
   retentionWorkerIntervalMs: positiveInteger("RETENTION_WORKER_INTERVAL_MS", 3600000, {
     min: 60000,
     max: 86400000,
@@ -145,6 +158,12 @@ export const config = Object.freeze({
   billingReconciliationBatchSize: positiveInteger("BILLING_RECONCILIATION_BATCH_SIZE", 20, {
     min: 1,
     max: 100,
+  }),
+  billingReconciliationLockKey: process.env.BILLING_RECONCILIATION_LOCK_KEY
+    ?? "agentguard:billing:tron-reconciliation",
+  billingReconciliationRunRetentionDays: positiveInteger("BILLING_RECONCILIATION_RUN_RETENTION_DAYS", 90, {
+    min: 7,
+    max: 730,
   }),
   usageCostModel: Object.freeze({
     cpuUsdPerHour: nonNegativeDecimal("USAGE_CPU_USD_PER_HOUR", 0.12, { max: 1000 }),
@@ -192,7 +211,7 @@ export const config = Object.freeze({
     usdtContract: process.env.TRON_USDT_CONTRACT ?? "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
     gridUrl: process.env.TRON_GRID_URL ?? "https://api.trongrid.io",
     scanUrl: process.env.TRONSCAN_API_URL ?? "https://apilist.tronscanapi.com",
-    apiKey: process.env.TRON_PRO_API_KEY ?? "",
+    apiKey: requiredProductionValue("TRON_PRO_API_KEY", ""),
     maxLookbackMs: positiveInteger("TRON_MAX_LOOKBACK_MS", 30 * 24 * 60 * 60 * 1000, {
       min: 60_000,
       max: 90 * 24 * 60 * 60 * 1000,
@@ -206,3 +225,9 @@ export const config = Object.freeze({
     !isProduction && process.env.ALLOW_PRIVATE_AGENT_ENDPOINTS === "true",
   isProduction,
 });
+
+export function assertProductionConfiguration() {
+  if (config.isProduction && !String(config.tron.apiKey).trim()) {
+    throw new Error("TRON_PRO_API_KEY must be configured in production.");
+  }
+}

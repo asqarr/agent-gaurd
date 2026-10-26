@@ -3,7 +3,7 @@ import express from "express";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { config } from "./core/config.mjs";
+import { assertProductionConfiguration, config } from "./core/config.mjs";
 import { closeDatabase, migrate, query, withTransaction } from "./core/db.mjs";
 import {
   clearSessionCookie,
@@ -23,7 +23,7 @@ import {
   verifyMfaCode,
 } from "./features/auth/auth.mjs";
 import { seedDevelopmentData } from "./infrastructure/bootstrap.mjs";
-import { attackPaths, policy, scenarios, toolDetails, tools } from "./features/catalog/domain.mjs";
+import { policy, scenarios, toolDetails, tools } from "./features/catalog/domain.mjs";
 import { decryptSecret, encryptSecret } from "./core/secrets.mjs";
 import { startScanWorker } from "./features/scans/scan-worker.mjs";
 import { startSentinelWorker } from "./features/sentinel/sentinel-worker.mjs";
@@ -34,7 +34,6 @@ import { assertHttpsIncidentWebhookUrl, deliverIncidentWebhook, incidentEventTyp
 import * as repository from "./infrastructure/repository.mjs";
 import { assertSafeAgentEndpoint } from "./features/agents/network-guard.mjs";
 import { requestAgentInput, testAgentConnection } from "./features/agents/agent-client.mjs";
-import { renderScanReport } from "./features/reports/report.mjs";
 import { renderEnforcementVerificationReport } from "./features/reports/verification-report.mjs";
 import {
   enforcementVerificationFingerprint,
@@ -49,7 +48,8 @@ import {
   normalizePaymentGrowthProperties,
 } from "./features/growth-analytics/domain.mjs";
 import { recordGrowthEvent } from "./features/growth-analytics/repository.mjs";
-import { createRateLimiter } from "./core/rate-limit.mjs";
+import { createConfiguredRateLimiter } from "./core/rate-limit.mjs";
+import { getRequestMetrics, observeRequest } from "./core/observability.mjs";
 import {
   approvalMatchesCall,
   buildExecutionReceipt,
@@ -67,17 +67,15 @@ import {
 } from "./features/runtime/runtime-firewall.mjs";
 import { summarizeRuntimeHealth } from "./features/runtime/runtime-health.mjs";
 import billingRouter from "./features/billing/billing-router.mjs";
+import { createIncidentNotification } from "./features/incidents/incident-repository.mjs";
+import { planLimitMetadata, planLimitResponse, requireEntitlement } from "./features/billing/entitlement-service.mjs";
+import { createScanRouter } from "./features/scans/scan-router.mjs";
+import { getOperationalObservability } from "./features/observability/observability-repository.mjs";
 
 const app = express();
+assertProductionConfiguration();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicPath = path.join(__dirname, "../../web/dist");
-const requestMetrics = {
-  startedAt: Date.now(),
-  requests: 0,
-  errors: 0,
-  totalLatencyMs: 0,
-};
-
 // Serve the production React build before any API or security middleware.
 // This keeps browser assets public on the single Render web service while
 // API requests continue through the normal middleware and authentication.
@@ -108,12 +106,7 @@ app.use((req, res, next) => {
     ? supplied
     : randomUUID();
   res.setHeader("X-Request-Id", req.requestId);
-  const startedAt = Date.now();
-  requestMetrics.requests += 1;
-  res.on("finish", () => {
-    requestMetrics.totalLatencyMs += Date.now() - startedAt;
-    if (res.statusCode >= 500) requestMetrics.errors += 1;
-  });
+  observeRequest(req, res);
   next();
 });
 
@@ -151,8 +144,13 @@ app.use((req, res, next) => {
     return res.status(403).json({ error: "Cross-origin request blocked.", requestId: req.requestId });
   }
   if (req.method === "OPTIONS") return res.sendStatus(204);
-  if (req.path.startsWith("/api/") && ["POST", "PATCH", "PUT", "DELETE"].includes(req.method) && origin && !isAllowedOrigin) {
-    return res.status(403).json({ error: "Cross-origin request blocked.", requestId: req.requestId });
+  const isMutation = ["POST", "PATCH", "PUT", "DELETE"].includes(req.method);
+  const hasSessionCookie = (req.get("Cookie") ?? "").split(";").some((value) => value.trim().startsWith(`${config.authCookie}=`));
+  if (config.isProduction && req.path.startsWith("/api/") && isMutation && hasSessionCookie && !req.path.startsWith("/api/runtime/")) {
+    const referer = req.get("Referer");
+    if (!origin && (!referer || !isSameOriginRequest(req, referer))) {
+      return res.status(403).json({ error: "CSRF protection rejected this request.", code: "CSRF_ORIGIN_REQUIRED", requestId: req.requestId });
+    }
   }
   next();
 });
@@ -249,36 +247,36 @@ function validateCredentials(email, password) {
 const loginFailures = new Map();
 const loginWindowMs = 15 * 60 * 1000;
 const loginMaxFailures = 5;
-const authRateLimit = createRateLimiter({
+const authRateLimit = createConfiguredRateLimiter({
   windowMs: config.authRateLimitWindowMs,
   max: config.authRateLimitMax,
   message: "Too many authentication requests. Try again later.",
 });
-const runtimeRateLimit = createRateLimiter({
+const runtimeRateLimit = createConfiguredRateLimiter({
   windowMs: config.runtimeRateLimitWindowMs,
   max: config.runtimeRateLimitMax,
   keyFn: (req) => `${req.ip}:${req.params.agentId}`,
   message: "Too many runtime requests for this agent. Try again later.",
 });
-const scanRateLimit = createRateLimiter({
+const scanRateLimit = createConfiguredRateLimiter({
   windowMs: config.scanRateLimitWindowMs,
   max: config.scanRateLimitMax,
   keyFn: (req) => `${req.auth?.workspaceId ?? req.ip}`,
   message: "Too many scan requests. Try again later.",
 });
-const attackLabRateLimit = createRateLimiter({
+const attackLabRateLimit = createConfiguredRateLimiter({
   windowMs: 10 * 60 * 1000,
   max: 30,
   keyFn: (req) => req.ip || req.socket.remoteAddress || "unknown",
   message: "Attack Lab is receiving too many requests. Please try again in a few minutes.",
 });
-const growthEventRateLimit = createRateLimiter({
+const growthEventRateLimit = createConfiguredRateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 80,
   keyFn: (req) => req.ip || req.socket.remoteAddress || "unknown",
   message: "Analytics event limit reached. Try again later.",
 });
-const webhookRateLimit = createRateLimiter({
+const webhookRateLimit = createConfiguredRateLimiter({
   windowMs: config.webhookRateLimitWindowMs,
   max: config.webhookRateLimitMax,
   keyFn: (req) => `${req.auth?.workspaceId ?? req.ip}`,
@@ -318,13 +316,7 @@ app.get("/api/health", async (req, res) => {
       worker: "running",
       requestId: req.requestId,
       uptimeSeconds: Math.floor(process.uptime()),
-      metrics: {
-        requests: requestMetrics.requests,
-        errors: requestMetrics.errors,
-        averageLatencyMs: requestMetrics.requests
-          ? Math.round(requestMetrics.totalLatencyMs / requestMetrics.requests)
-          : 0,
-      },
+      metrics: getRequestMetrics(),
     });
   } catch {
     res
@@ -335,6 +327,17 @@ app.get("/api/health", async (req, res) => {
         database: "unavailable",
       requestId: req.requestId,
       });
+  }
+});
+
+app.get("/api/ops/observability", requireAuth, async (req, res, next) => {
+  try {
+    if (!canManageAgents(req.auth.role)) {
+      return res.status(403).json({ error: "Only workspace owners and admins can view operational observability." });
+    }
+    return res.json(await getOperationalObservability({ windowMinutes: req.query.windowMinutes }));
+  } catch (error) {
+    return next(error);
   }
 });
 
@@ -684,13 +687,11 @@ app.post("/api/runtime/agents/:agentId/invoke", runtimeRateLimit, async (req, re
         } catch {
           console.error(JSON.stringify({ level: "error", event: "runtime_telemetry_write_failed", requestId, category: "quota" }));
         }
-        return res.status(402).json({
+        return planLimitResponse(req, res, error, {
+          workspaceId: agent.workspaceId,
           requestId,
-          error: error.message,
-          code: error.code,
           failClosed: true,
           execution: "NOT_EXECUTED",
-          nextActions: ["upgrade_plan", "purchase_runtime_addon"],
         });
       }
       throw error;
@@ -1298,25 +1299,9 @@ function canManageAgents(role) {
   return ["owner", "admin"].includes(role);
 }
 
-app.get("/api/attack-paths", async (req, res, next) => {
-  try {
-    const billing = await repository.getBillingState(req.auth.workspaceId);
-    const entitledIds = new Set(scenarios.slice(0, billing.entitlements.scenarioLimit).map((scenario) => scenario.id));
-    res.json({
-      paths: attackPaths.map((path) => ({
-        ...path,
-        locked: path.scenarioIds.some((scenarioId) => !entitledIds.has(scenarioId)),
-        requiredPlan: path.scenarioIds.some((scenarioId) => !entitledIds.has(scenarioId)) ? "Builder" : "Explorer",
-      })),
-      entitlements: {
-        scenarioLimit: billing.entitlements.scenarioLimit,
-        fullScenarioSuite: billing.entitlements.fullScenarioSuite,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+// Scan HTTP concerns live in the scan feature. The server only composes
+// authenticated feature routers and supplies cross-cutting dependencies.
+app.use("/api", createScanRouter({ scanRateLimit, recordAudit }));
 
 app.get("/api/agents/:agentId/security-contract", async (req, res, next) => {
   try {
@@ -1388,49 +1373,6 @@ app.patch("/api/agents/:agentId/security-contract", async (req, res, next) => {
     next(error);
   }
 });
-
-app.post("/api/agents/:agentId/attack-paths/:pathId/replay", scanRateLimit, async (req, res, next) => {
-  try {
-    const path = attackPaths.find((item) => item.id === req.params.pathId);
-    if (!path) return res.status(404).json({ error: "Attack path not found." });
-    const agent = await repository.getAgent(req.params.agentId, req.auth.workspaceId);
-    if (!agent) return res.status(404).json({ error: "Agent not found." });
-    if (agent.status === "quarantined") return res.status(409).json({ error: "Agent is quarantined. Restore it before replaying an attack path." });
-    const scan = await repository.enqueueScan({
-      workspaceId: req.auth.workspaceId,
-      agentId: agent.id,
-      trigger: `Attack path replay · ${path.title}`,
-      scenarioIds: path.scenarioIds,
-    });
-    await recordAudit(req, {
-      action: "attack_path.replayed",
-      resourceType: "attack_path",
-      resourceId: path.id,
-      metadata: { agentId: agent.id, scanId: scan.id, scenarioCount: path.scenarioIds.length },
-    });
-    res.status(202).json({ scan, path });
-  } catch (error) {
-    if (["SCAN_QUOTA_EXCEEDED", "SUBSCRIPTION_REQUIRED", "SCENARIO_PLAN_REQUIRED"].includes(error?.code)) {
-      return res.status(402).json({ error: error.message, code: error.code });
-    }
-    if (error?.code === "SCENARIO_NOT_FOUND") return res.status(404).json({ error: error.message, code: error.code });
-    next(error);
-  }
-});
-
-async function requireEntitlement(req, res, entitlement, message) {
-  const billing = await repository.getBillingState(req.auth.workspaceId);
-  if (!billing.entitlements.active || !billing.entitlements[entitlement]) {
-    res.status(402).json({
-      error: message,
-      code: "PLAN_UPGRADE_REQUIRED",
-      entitlement,
-      currentPlan: billing.plan.id,
-    });
-    return null;
-  }
-  return billing;
-}
 
 app.get("/api/audit", async (req, res, next) => {
   try {
@@ -1547,7 +1489,7 @@ app.post("/api/alert-webhooks", webhookRateLimit, async (req, res, next) => {
         error: `Your ${billing.plan.name} plan allows up to ${billing.entitlements.maxWebhooks} signed alert routes.`,
         code: "WEBHOOK_LIMIT_REACHED",
         entitlement: "maxWebhooks",
-        currentPlan: billing.plan.id,
+        ...planLimitMetadata({ code: "WEBHOOK_LIMIT_REACHED", entitlement: "maxWebhooks", currentPlan: billing.plan.id }),
       });
     }
     const webhook = await repository.createAlertWebhook({
@@ -2111,7 +2053,7 @@ app.post("/api/agents/:agentId/quarantine", async (req, res, next) => {
     const agent = await repository.getAgent(req.params.agentId, req.auth.workspaceId);
     if (!agent) return res.status(404).json({ error: "Agent not found." });
     await repository.quarantineAgent({ workspaceId: req.auth.workspaceId, agentId: agent.id, reason });
-    await repository.createIncidentNotification({
+    await createIncidentNotification({
       workspaceId: req.auth.workspaceId,
       agentId: agent.id,
       agentName: agent.name,
@@ -2205,7 +2147,7 @@ app.post("/api/autopilot/assessments", async (req, res, next) => {
     });
   } catch (error) {
     if (["SCAN_QUOTA_EXCEEDED", "SUBSCRIPTION_REQUIRED"].includes(error?.code)) {
-      return res.status(402).json({ error: error.message, code: error.code });
+      return planLimitResponse(req, res, error);
     }
     next(error);
   }
@@ -2244,6 +2186,8 @@ app.post("/api/autopilot/assessments/:assessmentId/apply", async (req, res, next
       return res.status(402).json({
         error: "Runtime Firewall protection requires a plan that includes runtime enforcement.",
         code: "RUNTIME_PLAN_REQUIRED",
+        entitlement: "runtimeFirewall",
+        ...planLimitMetadata({ code: "RUNTIME_PLAN_REQUIRED", entitlement: "runtimeFirewall", currentPlan: billing.plan.id }),
       });
     }
 
@@ -2351,7 +2295,7 @@ app.post("/api/agents", async (req, res, next) => {
     res.status(201).json({ agent });
   } catch (error) {
     if (error?.code === "AGENT_LIMIT_REACHED" || error?.code === "SUBSCRIPTION_REQUIRED") {
-      return res.status(402).json({ error: error.message, code: error.code });
+      return planLimitResponse(req, res, error);
     }
     next(error);
   }
@@ -2387,122 +2331,13 @@ app.post("/api/quickstart/demo", scanRateLimit, async (req, res, next) => {
     });
   } catch (error) {
     if (["SCAN_QUOTA_EXCEEDED", "SUBSCRIPTION_REQUIRED", "AGENT_LIMIT_REACHED"].includes(error?.code)) {
-      return res.status(402).json({ error: error.message, code: error.code });
+      return planLimitResponse(req, res, error);
     }
     next(error);
   }
 });
 
 app.get("/api/tools", (req, res) => res.json({ tools }));
-
-app.get("/api/scenarios", async (req, res, next) => {
-  try {
-    const { scenarios } = await import("./features/catalog/domain.mjs");
-    const billing = await repository.getBillingState(req.auth.workspaceId);
-    const visibleScenarios = scenarios.slice(0, billing.entitlements.scenarioLimit || 0);
-    res.json({
-      scenarios: visibleScenarios,
-      entitlements: {
-        scenarioLimit: billing.entitlements.scenarioLimit,
-        fullScenarioSuite: billing.entitlements.fullScenarioSuite,
-        lockedScenarioCount: Math.max(0, scenarios.length - visibleScenarios.length),
-      },
-      policy: (await repository.getPolicy(req.auth.workspaceId)) ?? policy,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/scans", async (req, res, next) => {
-  try {
-    res.json({ scans: await repository.listScans(req.auth.workspaceId) });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/scans", scanRateLimit, async (req, res, next) => {
-  try {
-    const { agentId, trigger = "Manual", scenarioIds = null } = req.body ?? {};
-    const agent = await repository.getAgent(
-      agentId ?? "storefront-copilot",
-      req.auth.workspaceId,
-    );
-    if (!agent) return res.status(404).json({ error: "Agent not found." });
-    if (agent.status === "quarantined") {
-      return res.status(409).json({ error: "Agent is quarantined. Restore it before starting a new scan." });
-    }
-    if (agent.endpoint && /^production$/i.test(agent.environment)) {
-      return res.status(409).json({
-        error: "Production scans are blocked by default because a customer endpoint may execute tools internally. Use a mock/Staging endpoint or enable Runtime Firewall and test through the gateway.",
-        code: "PRODUCTION_SCAN_BLOCKED",
-      });
-    }
-    const scan = await repository.enqueueScan({
-      workspaceId: req.auth.workspaceId,
-      agentId: agent.id,
-      trigger,
-      scenarioIds,
-    });
-    await recordAudit(req, {
-      action: "scan.created",
-      resourceType: "scan",
-      resourceId: scan.id,
-      metadata: { agentId: agent.id, trigger },
-    });
-    res.status(202).json({ scan });
-  } catch (error) {
-    if (["SCAN_QUOTA_EXCEEDED", "SUBSCRIPTION_REQUIRED"].includes(error?.code)) {
-      return res.status(402).json({ error: error.message, code: error.code });
-    }
-    next(error);
-  }
-});
-
-app.get("/api/scans/:scanId", async (req, res, next) => {
-  try {
-    const scan = await repository.getScan(
-      req.params.scanId,
-      req.auth.workspaceId,
-    );
-    if (!scan) return res.status(404).json({ error: "Scan not found." });
-    res.json({
-      scan,
-      policy: (await repository.getPolicy(req.auth.workspaceId)) ?? policy,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/scans/:scanId/report", async (req, res, next) => {
-  try {
-    const scan = await repository.getScan(req.params.scanId, req.auth.workspaceId);
-    if (!scan) return res.status(404).json({ error: "Scan not found." });
-    const agent = await repository.getAgent(scan.agentId, req.auth.workspaceId);
-    const isQuickstartPreview = agent?.mode === "demo_simulator" && scan.trigger === "Quickstart demo";
-    const billing = await repository.getBillingState(req.auth.workspaceId);
-    const isFirstFreePreview = billing.plan.id === "free" &&
-      scan.status === "completed" &&
-      await repository.isFirstCompletedScan({ scanId: scan.id, workspaceId: req.auth.workspaceId });
-    if (!isQuickstartPreview && !isFirstFreePreview && !(await requireEntitlement(req, res, "exportReports", "Shareable security reports require Builder or a higher plan."))) return;
-    const workspacePolicy = (await repository.getPolicy(req.auth.workspaceId)) ?? policy;
-    const reportPolicy = isQuickstartPreview
-      ? { ...workspacePolicy, name: "Quickstart refund policy", maxAmount: 50, maxAgeDays: 14, currency: "USD" }
-      : workspacePolicy;
-    const report = renderScanReport({
-      scan,
-      policy: reportPolicy,
-      preview: isQuickstartPreview || isFirstFreePreview,
-    });
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.setHeader("Content-Disposition", `inline; filename="agentguard-${scan.id}.html"`);
-    res.send(report);
-  } catch (error) {
-    next(error);
-  }
-});
 
 app.get("/api/policies", async (req, res, next) => {
   try {
@@ -2596,7 +2431,7 @@ app.use((error, req, res, next) => {
 async function start() {
   await migrate();
   await seedDevelopmentData();
-  const scanTimer = startScanWorker();
+  const scanWorker = startScanWorker();
   const sentinelTimer = startSentinelWorker();
   const incidentTimer = startIncidentWorker(config.incidentWorkerIntervalMs);
   const retentionTimer = startRetentionWorker();
@@ -2613,7 +2448,7 @@ async function start() {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`AgentGuard API received ${signal}; draining requests.`);
-    clearInterval(scanTimer);
+    await scanWorker.stop();
     clearInterval(sentinelTimer);
     clearInterval(incidentTimer);
     clearInterval(retentionTimer);

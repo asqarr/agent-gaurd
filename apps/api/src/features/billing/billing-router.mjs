@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { config } from "../../core/config.mjs";
 import { requireAuth } from "../auth/auth.mjs";
-import { createRateLimiter } from "../../core/rate-limit.mjs";
+import { createConfiguredRateLimiter } from "../../core/rate-limit.mjs";
 import * as repository from "../../infrastructure/repository.mjs";
 import { hashGrowthSourceKey, normalizePaymentGrowthProperties } from "../growth-analytics/domain.mjs";
 import { recordGrowthEvent } from "../growth-analytics/repository.mjs";
@@ -17,7 +17,7 @@ const router = Router();
 const PAYMENT_PROVIDER = "tron-p2p";
 const CHECKOUT_TTL_MS = 30 * 60 * 1000;
 
-const verifyRateLimit = createRateLimiter({
+const verifyRateLimit = createConfiguredRateLimiter({
   windowMs: config.webhookRateLimitWindowMs,
   max: Math.max(config.webhookRateLimitMax, 30),
   keyFn: (req) => `${req.ip || req.socket.remoteAddress || "unknown"}:${req.auth?.workspaceId ?? "anonymous"}`,
