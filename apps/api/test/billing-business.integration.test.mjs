@@ -37,6 +37,28 @@ test("billing rules enforce one-time free credits, add-ons, alerts and manual do
   assert.ok(cookie);
   const api = (path, init = {}) => jsonRequest(path, { ...init, headers: { ...(init.headers ?? {}), Cookie: cookie } });
   const workspaceId = registered.body.user.workspaceId;
+
+  const unauthenticatedReport = await jsonRequest("/api/billing/payment-exceptions/report", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ order_id: `checkout-${"a".repeat(32)}`, tx_hash: "a".repeat(64) }),
+  });
+  assert.equal(unauthenticatedReport.response.status, 401);
+
+  const invalidReportHash = await api("/api/billing/payment-exceptions/report", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ order_id: `checkout-${"b".repeat(32)}`, tx_hash: "not-a-tron-hash" }),
+  });
+  assert.equal(invalidReportHash.response.status, 400);
+
+  const unknownCheckoutReport = await api("/api/billing/payment-exceptions/report", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ order_id: `checkout-${"c".repeat(32)}`, tx_hash: "c".repeat(64) }),
+  });
+  assert.equal(unknownCheckoutReport.response.status, 404);
+
   let agentId;
   t.after(async () => {
     await api("/api/settings/workspace/delete", {
