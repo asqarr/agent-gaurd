@@ -16,6 +16,7 @@ import {
 import { attackPaths, policy, scenarios } from "../catalog/domain.mjs";
 import { renderScanReport } from "../reports/report.mjs";
 import { planLimitResponse, requireEntitlement } from "../billing/entitlement-service.mjs";
+import { appendWorkspaceActivitySafely } from "../activity/activity-repository.mjs";
 
 export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit }) {
   const router = express.Router();
@@ -154,6 +155,14 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
         return res.status(409).json({ error: "AI remediation is only available for findings that need review.", code: "COPILOT_NOT_APPLICABLE" });
       }
 
+      const workspaceAI = await repository.getWorkspaceAIProviderCredentials({
+        workspaceId: req.auth.workspaceId,
+      });
+      const aiConfig = workspaceAI
+        ? { ...config.ai, ...workspaceAI }
+        : config.ai;
+      const forceRefresh = req.body?.refresh === true;
+
       const cached = await copilotRepository.getScanCopilotGuidance({
         scanId: scan.id,
         workspaceId: req.auth.workspaceId,
@@ -161,7 +170,8 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
       });
       if (
         cached?.promptVersion === REMEDIATION_COPILOT_PROMPT_VERSION &&
-        cached?.schemaVersion === REMEDIATION_COPILOT_SCHEMA_VERSION
+        cached?.schemaVersion === REMEDIATION_COPILOT_SCHEMA_VERSION &&
+        !forceRefresh
       ) {
         const parsed = remediationCopilotSchema.safeParse(cached.guidance);
         if (parsed.success) {
@@ -172,9 +182,9 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
         }
       }
 
-      if (!isRemediationCopilotConfigured()) {
+      if (!isRemediationCopilotConfigured(aiConfig)) {
         return res.status(503).json({
-          error: "AI Remediation Copilot is not configured. Set AI_API_KEY and AI_MODEL on the API service.",
+          error: "AI Remediation Copilot is not configured. Add an API key in Workspace Settings or configure the platform AI provider.",
           code: "COPILOT_NOT_CONFIGURED",
         });
       }
@@ -187,13 +197,14 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
       const generation = createRemediationCopilotStream({
         evidence,
         abortSignal: abortController.signal,
+        aiConfig,
         onError: ({ error }) => console.error(JSON.stringify({
           level: "error",
           event: "scan_copilot_generation_failed",
           requestId: req.requestId,
           scanId: scan.id,
           scenarioId: result.scenarioId,
-          model: config.ai.model,
+          model: aiConfig.model,
           errorName: error instanceof Error ? error.name : "UnknownError",
           statusCode: Number.isInteger(error?.statusCode) ? error.statusCode : undefined,
         })),
@@ -214,7 +225,7 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
           workspaceId: req.auth.workspaceId,
           scenarioId: result.scenarioId,
           createdBy: req.auth.userId,
-          model: config.ai.model,
+          model: aiConfig.model,
           promptVersion: REMEDIATION_COPILOT_PROMPT_VERSION,
           schemaVersion: REMEDIATION_COPILOT_SCHEMA_VERSION,
           guidance,
@@ -227,12 +238,21 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
           resourceId: scan.id,
           metadata: {
             scenarioId: result.scenarioId,
-            model: config.ai.model,
+            model: aiConfig.model,
             promptVersion: REMEDIATION_COPILOT_PROMPT_VERSION,
             schemaVersion: REMEDIATION_COPILOT_SCHEMA_VERSION,
             inputTokens: usage.inputTokens ?? null,
             outputTokens: usage.outputTokens ?? null,
           },
+        });
+        await appendWorkspaceActivitySafely({
+          workspaceId: req.auth.workspaceId,
+          agentId: scan.agentId,
+          agentName: scan.agentName,
+          eventType: "copilot.generated",
+          resourceType: "scan",
+          resourceId: scan.id,
+          metadata: { scenarioId: result.scenarioId, model: aiConfig.model },
         });
       }
 
@@ -247,6 +267,19 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
         errorName: error instanceof Error ? error.name : "UnknownError",
       }));
       if (!res.headersSent && !res.destroyed) {
+        const providerStatus = Number(error?.statusCode ?? error?.response?.status);
+        if (providerStatus === 401 || providerStatus === 403) {
+          return res.status(502).json({
+            error: "The AI provider rejected the configured API key. Check the key in Workspace Settings.",
+            code: "COPILOT_PROVIDER_AUTH_FAILED",
+          });
+        }
+        if (providerStatus === 429) {
+          return res.status(429).json({
+            error: "The AI provider quota or rate limit has been reached. Check your provider account and retry.",
+            code: "COPILOT_PROVIDER_RATE_LIMITED",
+          });
+        }
         return res.status(502).json({ error: "AI remediation could not be generated. Please retry.", code: "COPILOT_GENERATION_FAILED" });
       }
       if (!res.destroyed) res.destroy();

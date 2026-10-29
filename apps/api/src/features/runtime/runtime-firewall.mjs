@@ -180,6 +180,7 @@ export function buildApprovalPayload({
   requestId,
   call,
   context,
+  traceContext,
   expiresAt,
   policyVersion = "runtime-v1",
 }) {
@@ -192,6 +193,7 @@ export function buildApprovalPayload({
     tool: call?.name ?? null,
     arguments: call?.arguments ?? {},
     context: context ?? null,
+    ...(traceContext ? { traceContext } : {}),
     policyVersion,
     expiresAt,
   };

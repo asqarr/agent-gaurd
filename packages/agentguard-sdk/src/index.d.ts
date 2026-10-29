@@ -21,6 +21,7 @@ export type Approval = {
     tool: string;
     arguments: Record<string, unknown>;
     context: ExecutionContext;
+    traceContext?: { traceId: string; spanId: string; traceFlags: number };
     policyVersion: string;
     expiresAt: string;
   };
@@ -30,6 +31,7 @@ export type Approval = {
 
 export type RuntimeResponse = {
   requestId: string;
+  traceId?: string;
   assistantText: string;
   tool_calls: ToolCall[];
   approved_tool_calls: Array<{ call: ToolCall; approval: Approval }>;

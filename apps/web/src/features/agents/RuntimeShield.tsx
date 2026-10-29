@@ -41,6 +41,34 @@ function formatLatency(value: number | null) {
   return value === null ? "—" : `${value} ms`;
 }
 
+function RuntimeTraceDetails({ event }: { event: RuntimeEvent }) {
+  if (!event.traceId || !event.traceSpans?.length) return null;
+  return (
+    <details className="runtime-trace">
+      <summary>
+        <span>View execution trace</span>
+        <code>{event.traceId.slice(0, 16)}...</code>
+        <small>{event.traceSpans.length} spans</small>
+      </summary>
+      <ol className="runtime-trace__timeline">
+        {event.traceSpans.map((span) => (
+          <li className={`runtime-trace__step runtime-trace__step--${span.outcome}`} key={span.spanId}>
+            <i />
+            <div>
+              <div className="runtime-trace__step-heading">
+                <strong>{span.name.replace(/^agentguard\./, "").replaceAll(".", " / ")}</strong>
+                <time>{span.durationMs} ms</time>
+              </div>
+              <span>{span.stage.replaceAll("_", " ")} · {span.outcome.replaceAll("_", " ")}{span.decision ? ` · ${span.decision}` : ""}</span>
+            </div>
+          </li>
+        ))}
+      </ol>
+      <p className="runtime-trace__disclaimer">The trace ends at the one-time approval boundary. The tool executor runs inside your application and is not observed by AgentGuard.</p>
+    </details>
+  );
+}
+
 export function RuntimeShield({
   agent,
   events,
@@ -254,11 +282,14 @@ await guard.execute({
                 const label = isError ? (event.errorCode ?? "ERROR") : isQuota ? "QUOTA" : event.decision;
                 const tone = isError ? "runtime-event__decision--error" : isQuota ? "runtime-event__decision--quota" : event.decision === "BLOCK" ? "runtime-event__decision--block" : "runtime-event__decision--allow";
                 return (
-                  <div className="runtime-event" key={event.id}>
-                    <i className={isError ? "runtime-event__dot--error" : isQuota ? "runtime-event__dot--quota" : event.decision === "BLOCK" ? "runtime-event__dot--block" : "runtime-event__dot--allow"} />
-                    <span>{event.toolName}</span>
-                    <strong className={tone}>{label}</strong>
-                    <small>{event.latencyMs}ms</small>
+                  <div className="runtime-event__group" key={event.id}>
+                    <div className="runtime-event">
+                      <i className={isError ? "runtime-event__dot--error" : isQuota ? "runtime-event__dot--quota" : event.decision === "BLOCK" ? "runtime-event__dot--block" : "runtime-event__dot--allow"} />
+                      <span>{event.toolName}</span>
+                      <strong className={tone}>{label}</strong>
+                      <small>{event.latencyMs}ms</small>
+                    </div>
+                    <RuntimeTraceDetails event={event} />
                   </div>
                 );
               })}

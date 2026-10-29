@@ -12,6 +12,7 @@ import {
 const maxAgeSeconds = 60 * 60 * 24 * 7;
 const refreshMaxAgeSeconds = 60 * 60 * 24 * 30;
 const refreshCookieName = `${config.authCookie}_refresh`;
+const refreshRotationsInFlight = new Map();
 
 export async function hashPassword(password) {
   return bcrypt.hash(password, 12);
@@ -135,6 +136,14 @@ function createRefreshToken() {
   return `ag_refresh_${randomBytes(32).toString("base64url")}`;
 }
 
+function createRotatedRefreshToken(currentToken) {
+  const digest = createHmac("sha256", config.jwtSecret)
+    .update("agentguard:refresh-rotation:v1:")
+    .update(currentToken)
+    .digest("base64url");
+  return `ag_refresh_${digest}`;
+}
+
 function toSessionUser(user) {
   return {
     id: user.user_id ?? user.id,
@@ -235,21 +244,34 @@ async function rotateRefreshSessionFromRequest(req, res) {
   const currentToken = readCookie(req.headers.cookie, refreshCookieName);
   if (!currentToken) return null;
 
-  const nextToken = createRefreshToken();
-  const metadata = requestMetadata(req);
-  const user = await rotateRefreshSession({
-    tokenHash: hashRefreshToken(currentToken),
-    nextSessionId: `refresh-${randomUUID()}`,
-    nextTokenHash: hashRefreshToken(nextToken),
-    nextExpiresAt: new Date(Date.now() + refreshMaxAgeSeconds * 1000),
-    ...metadata,
-  });
-  if (!user) return null;
+  const currentTokenHash = hashRefreshToken(currentToken);
+  let rotation = refreshRotationsInFlight.get(currentTokenHash);
+  if (!rotation) {
+    const nextToken = createRotatedRefreshToken(currentToken);
+    const metadata = requestMetadata(req);
+    rotation = rotateRefreshSession({
+      tokenHash: currentTokenHash,
+      nextSessionId: `refresh-${randomUUID()}`,
+      nextTokenHash: hashRefreshToken(nextToken),
+      nextExpiresAt: new Date(Date.now() + refreshMaxAgeSeconds * 1000),
+      ...metadata,
+    }).then((user) => user
+      ? { sessionUser: toSessionUser(user), nextToken }
+      : null);
+    refreshRotationsInFlight.set(currentTokenHash, rotation);
+  }
 
-  const sessionUser = toSessionUser(user);
-  setSessionCookie(res, issueSession(sessionUser));
-  setRefreshSessionCookie(res, nextToken);
-  return sessionUser;
+  try {
+    const result = await rotation;
+    if (!result) return null;
+    setSessionCookie(res, issueSession(result.sessionUser));
+    setRefreshSessionCookie(res, result.nextToken);
+    return result.sessionUser;
+  } finally {
+    if (refreshRotationsInFlight.get(currentTokenHash) === rotation) {
+      refreshRotationsInFlight.delete(currentTokenHash);
+    }
+  }
 }
 
 function authContext(user) {

@@ -17,5 +17,14 @@ services:
       timeout: 5s
       retries: 10
 
+  jaeger:
+    image: jaegertracing/jaeger:2.22.0
+    container_name: agentguard-jaeger
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:16686:16686"
+
 volumes:
   agentguard-postgres-data:

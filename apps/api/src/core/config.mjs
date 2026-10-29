@@ -125,6 +125,11 @@ export const config = Object.freeze({
   databaseUrl:
     process.env.DATABASE_URL ??
     "postgresql://agentguard:agentguard@127.0.0.1:5432/agentguard",
+  databasePoolMax: positiveInteger("DATABASE_POOL_MAX", 20, { min: 1, max: 80 }),
+  databaseConnectionTimeoutMs: positiveInteger("DATABASE_CONNECTION_TIMEOUT_MS", 15000, {
+    min: 1000,
+    max: 120000,
+  }),
   jwtSecret: requiredSecret("JWT_SECRET", "change-me-development-jwt-secret"),
   agentSecret: requiredSecret(
     "AGENT_SECRET",
@@ -203,6 +208,14 @@ export const config = Object.freeze({
   sentinelWorkerIntervalMs: positiveInteger("SENTINEL_WORKER_INTERVAL_MS", 60000, {
     min: 5000,
     max: 3600000,
+  }),
+  sentinelWorkerBatchSize: positiveInteger("SENTINEL_WORKER_BATCH_SIZE", 200, {
+    min: 1,
+    max: 1000,
+  }),
+  sentinelWorkerConcurrency: positiveInteger("SENTINEL_WORKER_CONCURRENCY", 8, {
+    min: 1,
+    max: 32,
   }),
   incidentWorkerIntervalMs: positiveInteger("INCIDENT_WORKER_INTERVAL_MS", 2000, {
     min: 500,

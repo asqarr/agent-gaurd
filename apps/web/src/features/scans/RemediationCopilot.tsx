@@ -32,10 +32,10 @@ export function RemediationCopilot({
     credentials: "include",
   });
 
-  function generatePlan() {
+  function generatePlan(forceRefresh = false) {
     clear();
     setRequested(true);
-    submit({});
+    submit(forceRefresh ? { refresh: true } : {});
   }
 
   function stopGeneration() {
@@ -106,15 +106,20 @@ export function RemediationCopilot({
 
       <div className="remediation-copilot__footer">
         {!requested || error ? (
-          <button type="button" className="button button--subtle" onClick={generatePlan} disabled={isLoading}>
+          <button type="button" className="button button--subtle" onClick={() => generatePlan(Boolean(storedGuidance || hasPlan))} disabled={isLoading}>
             <Icon name="sparkle" size={14} />{error ? "Retry AI plan" : "Generate AI fix plan"}
           </button>
         ) : null}
-        {hasPlan && !isLoading ? <span className="remediation-copilot__saved"><Icon name="shield" size={12} />Saved{storedGuidance?.model ? ` | ${storedGuidance.model}` : " to this scan"}</span> : null}
+        {hasPlan && !isLoading ? (
+          <button type="button" className="button button--subtle" onClick={() => generatePlan(true)} disabled={isLoading}>
+            <Icon name="sparkle" size={14} />Regenerate with current provider
+          </button>
+        ) : null}
+        {hasPlan && !isLoading ? <span className="remediation-copilot__saved"><Icon name="shield" size={12} />Saved to this scan</span> : null}
         {onRetest ? <button type="button" className="button button--subtle" onClick={() => onRetest(scenarioId)}><Icon name="scan" size={13} />{hasPlan ? "Verify after fix" : "Retest this scenario"}</button> : null}
       </div>
 
-      <p className="remediation-copilot__notice">Advisory only. The evidence excludes raw prompts, observed text, tool arguments, customer/scan IDs, customer agent URLs, and agent or customer secrets. The configured AI provider is authenticated with AI_API_KEY. Review every change; policy decisions remain with the deterministic guard.</p>
+      <p className="remediation-copilot__notice">Advisory only. The evidence excludes raw prompts, observed text, tool arguments, customer/scan IDs, customer agent URLs, and agent or customer secrets. Generation uses your workspace provider key when configured, otherwise the platform default. Review every change; policy decisions remain with the deterministic guard.</p>
     </section>
   );
 }

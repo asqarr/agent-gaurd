@@ -15,6 +15,7 @@ import { requestAgentScenario } from "../agents/agent-client.mjs";
 import { scenarios } from "../catalog/domain.mjs";
 import { scanCreditsForScenarios } from "../billing/domain.mjs";
 import { recordGrowthEvent } from "../growth-analytics/repository.mjs";
+import { appendWorkspaceActivitySafely } from "../activity/activity-repository.mjs";
 
 export async function processNextScanJob({ workerId = `scan-worker-${randomUUID()}` } = {}) {
   const job = await claimNextJob({
@@ -58,6 +59,14 @@ export async function processNextScanJob({ workerId = `scan-worker-${randomUUID(
       : scenarios;
     if (!selectedScenarios.length) throw new Error("Scan has no valid scenario definitions.");
     measurementUnits = scanCreditsForScenarios(selectedScenarios);
+    await appendWorkspaceActivitySafely({
+      workspaceId: context.workspace_id,
+      agentId: context.agent_id,
+      agentName: context.agent_name,
+      eventType: "scan.started",
+      resourceType: "scan",
+      resourceId: job.scan_id,
+    });
 
     heartbeat = setInterval(() => {
       void touchScanJob({ jobId: job.id, leaseToken }).catch((error) => {
@@ -100,18 +109,54 @@ export async function processNextScanJob({ workerId = `scan-worker-${randomUUID(
       requestScenario: requestAgentScenario,
       scenarios: selectedScenarios,
       scanId: job.scan_id,
-      onScenarioUpdate: (progress) => updateScanProgress({
-        scanId: job.scan_id,
-        leaseToken,
-        status: progress.status,
-        scenario: progress.scenario,
-        result: progress.result,
-        error: progress.error,
-        durationMs: progress.durationMs,
-      }),
+      onScenarioUpdate: async (progress) => {
+        await updateScanProgress({
+          scanId: job.scan_id,
+          leaseToken,
+          status: progress.status,
+          scenario: progress.scenario,
+          result: progress.result,
+          error: progress.error,
+          durationMs: progress.durationMs,
+        });
+        if (["passed", "blocked", "failed", "error"].includes(progress.status)) {
+          const scenarioOrdinal = selectedScenarios.findIndex((scenario) => scenario.id === progress.scenario?.id) + 1;
+          if (scenarioOrdinal > 0) {
+            await appendWorkspaceActivitySafely({
+              workspaceId: context.workspace_id,
+              agentId: context.agent_id,
+              agentName: context.agent_name,
+              eventType: "scan.progress",
+              resourceType: "scan_scenario",
+              resourceId: `${job.scan_id}:${progress.scenario.id}`,
+              metadata: {
+                scenarioOrdinal,
+                scenarioTotal: selectedScenarios.length,
+                scenarioStatus: progress.status,
+              },
+            });
+          }
+        }
+      },
     });
     outcome.metrics = buildMeasurement();
     await completeScan({ scanId: job.scan_id, leaseToken, outcome });
+    await appendWorkspaceActivitySafely({
+      workspaceId: context.workspace_id,
+      agentId: context.agent_id,
+      agentName: context.agent_name,
+      eventType: "scan.completed",
+      resourceType: "scan",
+      resourceId: job.scan_id,
+      metadata: {
+        score: outcome.score,
+        passed: outcome.passed,
+        failed: outcome.failed,
+        blocked: outcome.blocked,
+        inconclusive: outcome.inconclusive ?? 0,
+        durationMs: outcome.durationMs,
+      },
+    });
     try {
       await recordGrowthEvent({
         eventName: "business.first_scan_completed",
@@ -144,6 +189,16 @@ export async function processNextScanJob({ workerId = `scan-worker-${randomUUID(
       } else if (job.attempts < config.scanMaxAttempts) {
         const delayMs = config.scanRetryBaseMs * 2 ** Math.max(0, job.attempts - 1);
         await retryScan({ scanId: job.scan_id, leaseToken, errorMessage: message, delayMs });
+        if (context) {
+          await appendWorkspaceActivitySafely({
+            workspaceId: context.workspace_id,
+            agentId: context.agent_id,
+            agentName: context.agent_name,
+            eventType: "scan.retry_scheduled",
+            resourceType: "scan",
+            resourceId: job.scan_id,
+          });
+        }
       } else {
         await failScan({ scanId: job.scan_id, leaseToken, errorMessage: message, metrics: buildMeasurement() });
       }

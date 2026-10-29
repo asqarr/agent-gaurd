@@ -31,8 +31,8 @@ Security rules:
 - Do not claim that a recommendation has been applied. The plan is advisory and must be reviewed by a human.
 - Return the requested structured fields in clear, direct English. No markdown fences, links, or extra fields.`;
 
-export function isRemediationCopilotConfigured() {
-  return Boolean(config.ai.apiKey && config.ai.model);
+export function isRemediationCopilotConfigured(aiConfig = config.ai) {
+  return Boolean(aiConfig.apiKey && aiConfig.model);
 }
 
 function safePolicy(scan) {
@@ -87,13 +87,13 @@ export function buildRemediationCopilotEvidence({ scan, result }) {
   };
 }
 
-export function createRemediationCopilotStream({ evidence, abortSignal, onError }) {
+export function createRemediationCopilotStream({ evidence, abortSignal, onError, aiConfig = config.ai }) {
   const provider = createOpenAI({
-    apiKey: config.ai.apiKey,
-    baseURL: config.ai.baseUrl,
+    apiKey: aiConfig.apiKey,
+    baseURL: aiConfig.baseUrl,
   });
   return streamText({
-    model: provider.chat(config.ai.model),
+    model: provider.chat(aiConfig.model),
     output: Output.object({
       name: "agentguard_remediation_plan",
       description: "A human-reviewable, evidence-grounded security remediation plan.",
@@ -104,7 +104,7 @@ export function createRemediationCopilotStream({ evidence, abortSignal, onError 
     temperature: 0.2,
     maxOutputTokens: 1800,
     maxRetries: 0,
-    timeout: { totalMs: config.ai.requestTimeoutMs },
+    timeout: { totalMs: aiConfig.requestTimeoutMs },
     abortSignal,
     onError,
   });

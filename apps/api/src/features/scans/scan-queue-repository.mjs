@@ -30,8 +30,8 @@ async function assertLease(client, scanId, leaseToken) {
   return row;
 }
 
-export async function claimNextJob({ leaseMs = 300000, maxAttempts = 3, workerId = "scan-worker" } = {}) {
-  return withTransaction(async (client) => {
+export async function claimNextJob({ leaseMs = 300000, maxAttempts = 3, workerId = "scan-worker", transactionClient = null } = {}) {
+  const claim = async (client) => {
     await client.query(
       `UPDATE scans s
        SET status='failed', error='Worker lease expired after maximum attempts', finished_at=NOW()
@@ -98,7 +98,8 @@ export async function claimNextJob({ leaseMs = 300000, maxAttempts = 3, workerId
       [leaseToken, workerId],
     );
     return result.rows[0] ?? null;
-  });
+  };
+  return transactionClient ? claim(transactionClient) : withTransaction(claim);
 }
 
 export async function touchScanJob({ jobId, leaseToken }) {

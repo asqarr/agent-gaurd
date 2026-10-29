@@ -2,7 +2,7 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { closeDatabase, migrate, query, withAdvisoryLock } from "../src/core/db.mjs";
+import { closeDatabase, migrate, query, withAdvisoryLock, withTransaction } from "../src/core/db.mjs";
 import * as repository from "../src/infrastructure/repository.mjs";
 import {
   claimNextJob,
@@ -26,22 +26,29 @@ test("persistent scan leases recover and reject stale workers", async (t) => {
   const scanId = `queue-test-scan-${randomUUID()}`;
   const jobId = `queue-test-job-${randomUUID()}`;
   const { workspace_id: workspaceId, agent_id: agentId } = scope.rows[0];
-  await query(
-    `INSERT INTO scans (id, workspace_id, agent_id, status, trigger)
-     VALUES ($1, $2, $3, 'running', 'Queue lease integration test')`,
-    [scanId, workspaceId, agentId],
-  );
-  await query(
-    `INSERT INTO scan_jobs
-       (id, scan_id, status, attempts, locked_at, heartbeat_at, lease_token, locked_by)
-     VALUES ($1, $2, 'running', 1, NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '10 minutes', $3, 'dead-worker')`,
-    [jobId, scanId, "dead-lease"],
-  );
   t.after(async () => {
     await query("DELETE FROM scans WHERE id=$1", [scanId]);
   });
 
-  const reclaimed = await claimNextJob({ leaseMs: 1000, maxAttempts: 3, workerId: "recovery-worker" });
+  const reclaimed = await withTransaction(async (transactionClient) => {
+    await transactionClient.query(
+      `INSERT INTO scans (id, workspace_id, agent_id, status, trigger)
+       VALUES ($1, $2, $3, 'running', 'Queue lease integration test')`,
+      [scanId, workspaceId, agentId],
+    );
+    await transactionClient.query(
+      `INSERT INTO scan_jobs
+         (id, scan_id, status, attempts, locked_at, heartbeat_at, lease_token, locked_by)
+       VALUES ($1, $2, 'running', 1, NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '10 minutes', $3, 'dead-worker')`,
+      [jobId, scanId, "dead-lease"],
+    );
+    return claimNextJob({
+      leaseMs: 1000,
+      maxAttempts: 3,
+      workerId: "recovery-worker",
+      transactionClient,
+    });
+  });
   assert.equal(reclaimed.scan_id, scanId);
   assert.equal(reclaimed.attempts, 2);
   assert.equal(reclaimed.locked_by, "recovery-worker");

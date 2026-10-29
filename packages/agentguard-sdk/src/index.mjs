@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { context, propagation } from "@opentelemetry/api";
 
 function canonicalize(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
@@ -78,10 +79,16 @@ export class AgentGuardClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
+      const propagationHeaders = {};
+      propagation.inject(context.active(), propagationHeaders);
+      const traceparent = typeof propagationHeaders.traceparent === "string"
+        ? propagationHeaders.traceparent
+        : null;
       const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...(traceparent ? { traceparent } : {}),
           Authorization: `Bearer ${this.token}`,
         },
         body: JSON.stringify(body),

@@ -101,6 +101,12 @@ export async function getRuntimeEvents(agentId: string): Promise<RuntimeEvent[]>
   return (await request(`/api/agents/${agentId}/runtime/events`)).json().then((body) => body.events);
 }
 
+export async function getRuntimeEvent(agentId: string, requestId: string): Promise<RuntimeEvent> {
+  return (await request(`/api/agents/${encodeURIComponent(agentId)}/runtime/events/${encodeURIComponent(requestId)}`))
+    .json()
+    .then((body) => body.event);
+}
+
 export async function getRuntimeHealth(agentId: string, window: "24h" | "7d" = "24h"): Promise<RuntimeHealth> {
   return (await request(`/api/agents/${agentId}/runtime/health?window=${window}`)).json().then((body) => body.health);
 }

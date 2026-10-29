@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import { randomUUID } from "node:crypto";
+import { SpanKind } from "@opentelemetry/api";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertProductionConfiguration, config } from "./core/config.mjs";
@@ -66,21 +67,34 @@ import {
   verifyApprovalSignature,
 } from "./features/runtime/runtime-firewall.mjs";
 import { summarizeRuntimeHealth } from "./features/runtime/runtime-health.mjs";
+import {
+  createApprovalConsumedTraceSpan,
+  createRuntimeTrace,
+  shutdownRuntimeTelemetry,
+  startRuntimeTelemetry,
+} from "./features/runtime/runtime-tracing.mjs";
 import billingRouter from "./features/billing/billing-router.mjs";
 import { createIncidentNotification } from "./features/incidents/incident-repository.mjs";
 import { planLimitMetadata, planLimitResponse, requireEntitlement } from "./features/billing/entitlement-service.mjs";
 import { createScanRouter } from "./features/scans/scan-router.mjs";
 import { getOperationalObservability } from "./features/observability/observability-repository.mjs";
+import {
+  appendWorkspaceActivitySafely,
+  getWorkspaceActivityBounds,
+  listWorkspaceActivity,
+  listWorkspaceActivityAfter,
+} from "./features/activity/activity-repository.mjs";
+import { subscribeWorkspaceActivity, stopWorkspaceActivityHub } from "./features/activity/activity-hub.mjs";
 
 const app = express();
+const activityStreamResponses = new Set();
+const activityStreamsByUser = new Map();
+const maxActivityStreams = 2000;
+const maxActivityStreamsPerUser = 3;
+let activeActivityStreamCount = 0;
 assertProductionConfiguration();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicPath = path.join(__dirname, "../../web/dist");
-// Serve the production React build before any API or security middleware.
-// This keeps browser assets public on the single Render web service while
-// API requests continue through the normal middleware and authentication.
-app.use(express.static(publicPath));
-app.use("/assets", express.static(path.join(publicPath, "assets")));
 
 app.disable("x-powered-by");
 app.set("trust proxy", config.trustProxy);
@@ -119,6 +133,10 @@ app.use((req, res, next) => {
   res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
   res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   res.setHeader("X-Permitted-Cross-Domain-Policies", "none");
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+  );
   if (config.isProduction) {
     res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   }
@@ -154,6 +172,11 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// Keep the dashboard public while applying the same security headers and
+// origin checks used by API responses.
+app.use(express.static(publicPath));
+app.use("/assets", express.static(path.join(publicPath, "assets")));
 
 function publicUser(user) {
   return {
@@ -247,6 +270,9 @@ function validateCredentials(email, password) {
 const loginFailures = new Map();
 const loginWindowMs = 15 * 60 * 1000;
 const loginMaxFailures = 5;
+const maxTrackedLoginFailures = 50_000;
+const loginFailureCleanupIntervalMs = 60_000;
+let lastLoginFailureCleanupAt = 0;
 const authRateLimit = createConfiguredRateLimiter({
   windowMs: config.authRateLimitWindowMs,
   max: config.authRateLimitMax,
@@ -293,9 +319,27 @@ function loginKey(req, email) {
   return `${req.ip}:${email.trim().toLowerCase()}`;
 }
 
+function pruneLoginFailures(now = Date.now()) {
+  if (
+    now - lastLoginFailureCleanupAt < loginFailureCleanupIntervalMs &&
+    loginFailures.size <= maxTrackedLoginFailures
+  ) return;
+  for (const [key, entry] of loginFailures) {
+    if (entry.resetAt <= now) loginFailures.delete(key);
+  }
+  while (loginFailures.size > maxTrackedLoginFailures) {
+    const oldestKey = loginFailures.keys().next().value;
+    if (oldestKey === undefined) break;
+    loginFailures.delete(oldestKey);
+  }
+  lastLoginFailureCleanupAt = now;
+}
+
 function isLoginBlocked(key) {
+  const now = Date.now();
+  pruneLoginFailures(now);
   const entry = loginFailures.get(key);
-  if (!entry || entry.resetAt <= Date.now()) {
+  if (!entry || entry.resetAt <= now) {
     loginFailures.delete(key);
     return false;
   }
@@ -303,13 +347,21 @@ function isLoginBlocked(key) {
 }
 
 function recordLoginFailure(key) {
+  const now = Date.now();
+  pruneLoginFailures(now);
   const current = loginFailures.get(key);
   const entry =
-    current && current.resetAt > Date.now()
+    current && current.resetAt > now
       ? current
-      : { failures: 0, resetAt: Date.now() + loginWindowMs };
+      : { failures: 0, resetAt: now + loginWindowMs };
   entry.failures += 1;
+  loginFailures.delete(key);
   loginFailures.set(key, entry);
+  while (loginFailures.size > maxTrackedLoginFailures) {
+    const oldestKey = loginFailures.keys().next().value;
+    if (oldestKey === undefined) break;
+    loginFailures.delete(oldestKey);
+  }
 }
 
 app.get("/api/health", async (req, res) => {
@@ -634,6 +686,7 @@ app.post("/api/runtime/agents/:agentId/invoke", runtimeRateLimit, async (req, re
   let meteredDecision = "ERROR";
   let meteredToolCount = 0;
   let runtimeFailureStage = "gateway";
+  let runtimeTrace = null;
   try {
     const token = readRuntimeToken(req);
     if (!token) return res.status(401).json({ error: "Runtime token required." });
@@ -677,44 +730,67 @@ app.post("/api/runtime/agents/:agentId/invoke", runtimeRateLimit, async (req, re
       }
     }
 
+    runtimeTrace = createRuntimeTrace({ parentTraceparent: req.get("traceparent") });
+    res.setHeader("X-AgentGuard-Trace-Id", runtimeTrace.traceId);
+
     let runtimeUsage;
     runtimeFailureStage = "quota";
-    try {
-      runtimeUsage = await repository.reserveRuntimeDecision(agent.workspaceId);
-    } catch (error) {
-      if (error?.code === "RUNTIME_QUOTA_EXCEEDED" || error?.code === "SUBSCRIPTION_REQUIRED") {
-        try {
-          await repository.recordRuntimeEvent({
-            workspaceId: agent.workspaceId,
-            agentId: agent.id,
-            requestId,
-            decision: "BLOCK",
-            toolName: "runtime_quota",
-            reasons: ["Runtime invocation was rejected because the workspace has no available Runtime capacity."],
-            latencyMs: Date.now() - startedAt,
-            outcome: "quota",
-            errorCode: error.code,
-            failureStage: "quota",
-          });
-        } catch {
-          console.error(JSON.stringify({ level: "error", event: "runtime_telemetry_write_failed", requestId, category: "quota" }));
+    const quotaResult = await runtimeTrace.measure({
+      name: "agentguard.runtime.quota.reserve",
+      stage: "quota",
+      outcome: (value) => value.quotaError ? "rejected" : "reserved",
+    }, async () => {
+      try {
+        return { usage: await repository.reserveRuntimeDecision(agent.workspaceId) };
+      } catch (error) {
+        if (error?.code === "RUNTIME_QUOTA_EXCEEDED" || error?.code === "SUBSCRIPTION_REQUIRED") {
+          return { quotaError: error };
         }
-        return planLimitResponse(req, res, error, {
-          workspaceId: agent.workspaceId,
-          requestId,
-          failClosed: true,
-          execution: "NOT_EXECUTED",
-        });
+        throw error;
       }
-      throw error;
+    });
+    if (quotaResult.quotaError) {
+      const traceResult = runtimeTrace.finish({ outcome: "quota_rejected", decision: "BLOCK", toolCount: 0 });
+      try {
+        await repository.recordRuntimeEvent({
+          workspaceId: agent.workspaceId,
+          agentId: agent.id,
+          agentName: agent.name,
+          requestId,
+          decision: "BLOCK",
+          toolName: "runtime_quota",
+          reasons: ["Runtime invocation was rejected because the workspace has no available Runtime capacity."],
+          latencyMs: Date.now() - startedAt,
+          outcome: "quota",
+          errorCode: quotaResult.quotaError.code,
+          failureStage: "quota",
+          traceId: traceResult.traceId,
+          traceSpans: traceResult.traceSpans,
+        });
+      } catch {
+        console.error(JSON.stringify({ level: "error", event: "runtime_telemetry_write_failed", requestId, category: "quota" }));
+      }
+      return planLimitResponse(req, res, quotaResult.quotaError, {
+        workspaceId: agent.workspaceId,
+        requestId,
+        failClosed: true,
+        execution: "NOT_EXECUTED",
+      });
     }
+    runtimeUsage = quotaResult.usage;
     meteredRuntimeUsage = runtimeUsage;
     runtimeFailureStage = "customer_endpoint";
     const encryptedApiKey = await repository.getRuntimeAgentSecret(agent.id);
-    const upstream = await requestAgentInput(
+    const upstream = await runtimeTrace.measure({
+      name: "agentguard.customer_agent.invoke",
+      stage: "customer_agent",
+      kind: SpanKind.CLIENT,
+    }, ({ traceparent }) => requestAgentInput(
       { endpoint: agent.endpoint, encryptedApiKey },
       {
         input: body.input,
+        requestId,
+        traceparent,
         metadata: {
           ...(body.metadata ?? {}),
           source: "agentguard_runtime",
@@ -722,83 +798,111 @@ app.post("/api/runtime/agents/:agentId/invoke", runtimeRateLimit, async (req, re
           execute_tools: false,
         },
       },
-    );
+    ));
     runtimeFailureStage = "policy";
-    const workspacePolicy = (await repository.getPolicy(agent.workspaceId)) ?? policy;
-    const contract = await repository.getSecurityContract({
-      workspaceId: agent.workspaceId,
-      agentId: agent.id,
+    const assessment = await runtimeTrace.measure({
+      name: "agentguard.policy.evaluate",
+      stage: "policy",
+      outcome: (value) => value.guard.decision === "BLOCK" ? "blocked" : "allowed",
+      decision: (value) => value.guard.decision,
+      toolCount: (value) => value.guard.inspections.length,
+    }, async () => {
+      const workspacePolicy = (await repository.getPolicy(agent.workspaceId)) ?? policy;
+      const contract = await repository.getSecurityContract({
+        workspaceId: agent.workspaceId,
+        agentId: agent.id,
+      });
+      const initialGuard = inspectRuntimeCalls(upstream.toolCalls, {
+        allowedToolIds: contract?.allowedToolIds ?? agent.tools,
+        policy: {
+          ...workspacePolicy,
+          maxAmount: Math.min(Number(workspacePolicy.maxAmount), Number(contract?.maxRefundAmount ?? workspacePolicy.maxAmount)),
+          maxAgeDays: Math.min(Number(workspacePolicy.maxAgeDays), Number(contract?.maxOrderAgeDays ?? workspacePolicy.maxAgeDays)),
+        },
+        orders: trustedOrders,
+      });
+      const guard = finalizeRuntimeCalls(
+        upstream.executionSafety === "unsafe"
+          ? [{
+              call: null,
+              decision: "BLOCK",
+              execution: "NOT_EXECUTED",
+              reasons: [
+                "Customer endpoint reported that it executed a tool before AgentGuard. This integration cannot provide pre-execution enforcement.",
+              ],
+            }]
+          : enforceExecutionContext(initialGuard.inspections, executionContext),
+      );
+      return { workspacePolicy, contract, guard };
     });
-    const initialGuard = inspectRuntimeCalls(upstream.toolCalls, {
-      allowedToolIds: contract?.allowedToolIds ?? agent.tools,
-      policy: {
-        ...workspacePolicy,
-        maxAmount: Math.min(Number(workspacePolicy.maxAmount), Number(contract?.maxRefundAmount ?? workspacePolicy.maxAmount)),
-        maxAgeDays: Math.min(Number(workspacePolicy.maxAgeDays), Number(contract?.maxOrderAgeDays ?? workspacePolicy.maxAgeDays)),
-      },
-      orders: trustedOrders,
-    });
-    const guard = finalizeRuntimeCalls(
-      upstream.executionSafety === "unsafe"
-        ? [{
-            call: null,
-            decision: "BLOCK",
-            execution: "NOT_EXECUTED",
-            reasons: [
-              "Customer endpoint reported that it executed a tool before AgentGuard. This integration cannot provide pre-execution enforcement.",
-            ],
-          }]
-        : enforceExecutionContext(initialGuard.inspections, executionContext),
-    );
+    const { contract, guard } = assessment;
     meteredDecision = guard.decision;
     meteredToolCount = guard.inspections.length;
-    const approvals = [];
-    if (guard.decision === "ALLOW") {
-      runtimeFailureStage = "approval_storage";
-      const expiresAt = new Date(Date.now() + config.runtimeApprovalTtlMs);
-      for (const call of guard.toolCalls) {
-        const payload = buildApprovalPayload({
-          approvalId: createApprovalId(),
-          agentId: agent.id,
-          workspaceId: agent.workspaceId,
-          requestId,
-          call,
-          context: executionContext,
-          expiresAt: expiresAt.toISOString(),
-          policyVersion: contract?.version ? `contract-v${contract.version}` : "runtime-v1",
-        });
-        const signature = signApproval(payload, token);
-        await repository.createRuntimeApproval({
-          id: payload.approvalId,
-          workspaceId: agent.workspaceId,
-          agentId: agent.id,
-          requestId,
-          toolName: call.name,
-          payload,
-          signature,
-          expiresAt,
-        });
-        approvals.push({
-          id: payload.approvalId,
-          payload,
-          signature,
-          expiresAt: payload.expiresAt,
-        });
+    runtimeFailureStage = "approval_storage";
+    const approvals = await runtimeTrace.measure({
+      name: "agentguard.runtime.approvals.issue",
+      stage: "approval",
+      outcome: (value) => value.length ? "issued" : "not_required",
+      toolCount: (value) => value.length,
+    }, async () => {
+      const issued = [];
+      if (guard.decision === "ALLOW") {
+        const expiresAt = new Date(Date.now() + config.runtimeApprovalTtlMs);
+        for (const call of guard.toolCalls) {
+          const payload = buildApprovalPayload({
+            approvalId: createApprovalId(),
+            agentId: agent.id,
+            workspaceId: agent.workspaceId,
+            requestId,
+            call,
+            context: executionContext,
+            traceContext: runtimeTrace.traceContext,
+            expiresAt: expiresAt.toISOString(),
+            policyVersion: contract?.version ? `contract-v${contract.version}` : "runtime-v1",
+          });
+          const signature = signApproval(payload, token);
+          await repository.createRuntimeApproval({
+            id: payload.approvalId,
+            workspaceId: agent.workspaceId,
+            agentId: agent.id,
+            requestId,
+            toolName: call.name,
+            payload,
+            signature,
+            expiresAt,
+          });
+          issued.push({
+            id: payload.approvalId,
+            payload,
+            signature,
+            expiresAt: payload.expiresAt,
+          });
+        }
       }
-    }
+      return issued;
+    });
     runtimeFailureStage = "decision_persistence";
+    const traceResult = runtimeTrace.finish({
+      outcome: guard.decision === "BLOCK" ? "blocked" : "allowed",
+      decision: guard.decision,
+      toolCount: guard.inspections.length,
+    });
     await repository.recordRuntimeEvent({
       workspaceId: agent.workspaceId,
       agentId: agent.id,
+      agentName: agent.name,
       requestId,
       decision: guard.decision,
       toolName: guard.inspections.map((item) => item.call?.name).filter(Boolean).join(", ") || "no_tool_call",
       reasons: guard.reasons,
       latencyMs: Date.now() - startedAt,
+      traceId: traceResult.traceId,
+      traceSpans: traceResult.traceSpans,
     });
     runtimeFailureStage = "gateway";
     res.json({
       requestId,
+      traceId: traceResult.traceId,
       assistantText: upstream.assistantText,
       tool_calls: guard.toolCalls,
       blocked_tool_calls: guard.inspections
@@ -821,6 +925,11 @@ app.post("/api/runtime/agents/:agentId/invoke", runtimeRateLimit, async (req, re
       latencyMs: Date.now() - startedAt,
     });
   } catch (error) {
+    const traceResult = runtimeTrace?.finish({
+      outcome: "error",
+      decision: "BLOCK",
+      toolCount: meteredToolCount,
+    });
     if (meteredAgent && meteredRuntimeUsage) {
       const errorCode = runtimeFailureStage === "customer_endpoint"
         ? (/timed out|timeout/i.test(error instanceof Error ? error.message : "") ? "UPSTREAM_TIMEOUT" : "UPSTREAM_FAILURE")
@@ -838,6 +947,7 @@ app.post("/api/runtime/agents/:agentId/invoke", runtimeRateLimit, async (req, re
         await repository.recordRuntimeEvent({
           workspaceId: meteredAgent.workspaceId,
           agentId: meteredAgent.id,
+          agentName: meteredAgent.name,
           requestId,
           decision: "BLOCK",
           toolName: "runtime_request",
@@ -846,6 +956,8 @@ app.post("/api/runtime/agents/:agentId/invoke", runtimeRateLimit, async (req, re
           outcome: "error",
           errorCode,
           failureStage,
+          traceId: traceResult?.traceId,
+          traceSpans: traceResult?.traceSpans,
         });
       } catch {
         console.error(JSON.stringify({ level: "error", event: "runtime_telemetry_write_failed", requestId, category: "error" }));
@@ -922,6 +1034,34 @@ app.post("/api/runtime/agents/:agentId/approvals/:approvalId/consume", runtimeRa
         code: "APPROVAL_REPLAYED_OR_EXPIRED",
       });
     }
+    const approvalTraceSpan = createApprovalConsumedTraceSpan(approval.payload.traceContext);
+    if (approvalTraceSpan) {
+      try {
+        await repository.appendRuntimeTraceSpan({
+          workspaceId: agent.workspaceId,
+          agentId: agent.id,
+          requestId: approval.requestId,
+          traceId: approvalTraceSpan.traceId,
+          span: approvalTraceSpan,
+        });
+      } catch (traceError) {
+        console.error(JSON.stringify({
+          level: "error",
+          event: "runtime_trace_append_failed",
+          requestId: approval.requestId,
+          errorName: traceError instanceof Error ? traceError.name : "UnknownError",
+        }));
+      }
+    }
+    await appendWorkspaceActivitySafely({
+      workspaceId: agent.workspaceId,
+      agentId: agent.id,
+      agentName: agent.name,
+      eventType: "runtime.approval_consumed",
+      resourceType: "runtime_event",
+      resourceId: approval.requestId,
+      metadata: { traceId: approval.payload.traceContext?.traceId },
+    });
     await recordGrowthSafely({
       eventName: "business.sdk_verified",
       workspaceId: agent.workspaceId,
@@ -933,11 +1073,12 @@ app.post("/api/runtime/agents/:agentId/approvals/:approvalId/consume", runtimeRa
       action: "runtime_approval.consumed",
       resourceType: "runtime_approval",
       resourceId: approval.id,
-      metadata: { agentId: agent.id, toolName: approval.toolName, requestId: approval.requestId },
+      metadata: { agentId: agent.id, toolName: approval.toolName, requestId: approval.requestId, traceId: approval.payload.traceContext?.traceId ?? null },
     });
     res.json({
       approved: true,
       approvalId: approval.id,
+      traceId: approval.payload.traceContext?.traceId ?? null,
       execution: "AUTHORIZED_ONCE",
       toolCall: {
         name: approval.payload.tool,
@@ -999,12 +1140,230 @@ app.use("/api/billing", billingRouter);
 // Everything below this point is workspace-scoped and requires a valid session.
 app.use("/api", requireAuth);
 
+const maxActivityEventId = 9223372036854775807n;
+
+function validActivityCursor(value) {
+  if (typeof value !== "string" || !/^\d{1,19}$/.test(value)) return null;
+  try {
+    const parsed = BigInt(value);
+    return parsed >= 0n && parsed <= maxActivityEventId ? parsed.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeActivitySse(res, eventName, payload, eventId = null) {
+  if (res.destroyed || res.writableEnded) return false;
+  let writable = true;
+  if (eventId && !res.write(`id: ${eventId}\n`)) writable = false;
+  if (!res.write(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`)) writable = false;
+  return writable;
+}
+
+function closeWorkspaceActivityStreams() {
+  for (const response of activityStreamResponses) {
+    writeActivitySse(response, "stream-close", { reason: "server_shutdown" });
+    response.end();
+  }
+  activityStreamResponses.clear();
+}
+
+app.get("/api/activity", async (req, res, next) => {
+  try {
+    const limitValue = Number(req.query.limit ?? 50);
+    if (!Number.isInteger(limitValue) || limitValue < 1 || limitValue > 50) {
+      return res.status(400).json({ error: "Activity page size must be between 1 and 50." });
+    }
+    const beforeId = req.query.beforeId === undefined ? null : validActivityCursor(req.query.beforeId);
+    if (req.query.beforeId !== undefined && !beforeId) {
+      return res.status(400).json({ error: "Activity cursor is invalid." });
+    }
+    const events = await listWorkspaceActivity({
+      workspaceId: req.auth.workspaceId,
+      beforeId,
+      limit: limitValue + 1,
+    });
+    const hasMore = events.length > limitValue;
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ events: events.slice(0, limitValue), hasMore });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/activity/stream", async (req, res, next) => {
+  const rawCursor = req.get("Last-Event-ID") ?? req.query.afterId;
+  const initialCursor = rawCursor === undefined ? null : validActivityCursor(rawCursor);
+  if (rawCursor !== undefined && !initialCursor) {
+    return res.status(400).json({ error: "Activity stream cursor is invalid." });
+  }
+  const userId = req.auth.userId;
+  const activeUserStreams = activityStreamsByUser.get(userId) ?? 0;
+  if (activeActivityStreamCount >= maxActivityStreams || activeUserStreams >= maxActivityStreamsPerUser) {
+    return res.status(429).json({ error: "Too many activity streams are open. Close another stream and try again." });
+  }
+  activeActivityStreamCount += 1;
+  activityStreamsByUser.set(userId, activeUserStreams + 1);
+  let streamSlotClaimed = true;
+
+  let cursor = initialCursor ?? "0";
+  let initialized = initialCursor !== null;
+  const initialHistoryReplay = initialCursor === null;
+  let replaying = false;
+  let buffering = true;
+  let replayRequested = false;
+  let unsubscribe = () => {};
+  let heartbeat;
+  let replayRetryTimer;
+  let replayRetryDelayMs = 1000;
+  let closed = false;
+
+  const sendActivity = (event, isInitialHistory = false) => {
+    if (!event?.id || BigInt(event.id) <= BigInt(cursor)) return;
+    const eventName = initialHistoryReplay && isInitialHistory ? "activity-history" : "activity";
+    const writable = writeActivitySse(res, eventName, event, event.id);
+    cursor = event.id;
+    if (!writable) {
+      close();
+      res.end();
+    }
+  };
+
+  const replay = async () => {
+    if (closed) return;
+    if (replaying) {
+      replayRequested = true;
+      return;
+    }
+    replaying = true;
+    let replaySucceeded = false;
+    try {
+      do {
+        replayRequested = false;
+        if (!initialized) {
+          const recent = await listWorkspaceActivity({ workspaceId: req.auth.workspaceId, limit: 50 });
+          for (const event of recent.reverse()) sendActivity(event, true);
+          initialized = true;
+          continue;
+        }
+
+        const bounds = await getWorkspaceActivityBounds({ workspaceId: req.auth.workspaceId });
+        if (bounds.newestId && BigInt(cursor) > BigInt(bounds.newestId)) cursor = bounds.newestId;
+
+        let rows;
+        do {
+          rows = await listWorkspaceActivityAfter({
+            workspaceId: req.auth.workspaceId,
+            afterId: cursor,
+            limit: 500,
+          });
+          for (const event of rows) sendActivity(event);
+        } while (!closed && rows.length === 500);
+      } while (!closed && replayRequested);
+      replaySucceeded = true;
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "workspace_activity_replay_failed",
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      }));
+      if (!closed && !replayRetryTimer) {
+        const delay = replayRetryDelayMs;
+        replayRetryDelayMs = Math.min(30000, replayRetryDelayMs * 2);
+        replayRetryTimer = setTimeout(() => {
+          replayRetryTimer = null;
+          void replay();
+        }, delay);
+        replayRetryTimer.unref?.();
+      }
+    } finally {
+      replaying = false;
+      if (replaySucceeded) {
+        replayRetryDelayMs = 1000;
+        if (replayRetryTimer) clearTimeout(replayRetryTimer);
+        replayRetryTimer = null;
+      }
+      if (!closed && replaySucceeded && replayRequested) void replay();
+    }
+  };
+
+  const onActivity = () => {
+    replayRequested = true;
+    if (!buffering && !replaying) void replay();
+  };
+
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    if (heartbeat) clearInterval(heartbeat);
+    if (replayRetryTimer) clearTimeout(replayRetryTimer);
+    activityStreamResponses.delete(res);
+    if (streamSlotClaimed) {
+      streamSlotClaimed = false;
+      activeActivityStreamCount = Math.max(0, activeActivityStreamCount - 1);
+      const nextCount = (activityStreamsByUser.get(userId) ?? 1) - 1;
+      if (nextCount > 0) activityStreamsByUser.set(userId, nextCount);
+      else activityStreamsByUser.delete(userId);
+    }
+    unsubscribe();
+  };
+
+  try {
+    unsubscribe = await subscribeWorkspaceActivity(req.auth.workspaceId, onActivity);
+    if (closed || res.destroyed) {
+      unsubscribe();
+      close();
+      return;
+    }
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+    activityStreamResponses.add(res);
+    if (!res.write(": AgentGuard workspace activity stream connected\n\n")) {
+      close();
+      res.end();
+      return;
+    }
+    heartbeat = setInterval(() => {
+      if (!res.destroyed && !res.writableEnded && !res.write(`: heartbeat ${Date.now()}\n\n`)) {
+        close();
+        res.end();
+      }
+    }, 20000);
+    heartbeat.unref?.();
+    req.once("aborted", close);
+    res.once("close", close);
+    buffering = false;
+    void replay();
+  } catch (error) {
+    close();
+    next(error);
+  }
+});
+
 function validateSettingsText(value, { min = 2, max = 80 } = {}) {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return normalized.length >= min && normalized.length <= max
     ? normalized
     : null;
+}
+
+function workspaceAIProviderPublicSettings(workspaceSettings) {
+  const platformFallbackAvailable = Boolean(config.ai.apiKey && config.ai.model);
+  const workspaceKeyConfigured = Boolean(workspaceSettings?.apiKeyConfigured);
+  return {
+    provider: "OpenAI-compatible",
+    apiKeyConfigured: workspaceKeyConfigured,
+    activeSource: workspaceKeyConfigured ? "workspace" : platformFallbackAvailable ? "platform" : "none",
+    model: workspaceKeyConfigured ? workspaceSettings.model : platformFallbackAvailable ? config.ai.model : null,
+    platformFallbackAvailable,
+    platformModel: platformFallbackAvailable ? config.ai.model : null,
+    updatedAt: workspaceSettings?.updatedAt ?? null,
+  };
 }
 
 app.get("/api/settings", async (req, res, next) => {
@@ -1015,6 +1374,83 @@ app.get("/api/settings", async (req, res, next) => {
     });
     if (!settings) return res.status(404).json({ error: "Workspace not found." });
     res.json(settings);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/settings/ai-provider", async (req, res, next) => {
+  try {
+    const workspaceSettings = await repository.getWorkspaceAIProviderSettings({
+      workspaceId: req.auth.workspaceId,
+    });
+    res.setHeader("Cache-Control", "no-store");
+    res.json(workspaceAIProviderPublicSettings(workspaceSettings));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/settings/ai-provider", async (req, res, next) => {
+  try {
+    if (!canManageAgents(req.auth.role)) {
+      return res.status(403).json({ error: "Only workspace owners and admins can manage AI provider credentials." });
+    }
+    const body = req.body ?? {};
+    if (body.apiKey !== undefined && typeof body.apiKey !== "string") {
+      return res.status(400).json({ error: "API key must be a string." });
+    }
+    if (body.clearApiKey !== undefined && typeof body.clearApiKey !== "boolean") {
+      return res.status(400).json({ error: "clearApiKey must be a boolean." });
+    }
+    const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+    if (apiKey.length > 2048) {
+      return res.status(400).json({ error: "API key must be 2,048 characters or fewer." });
+    }
+    if (body.clearApiKey && apiKey) {
+      return res.status(400).json({ error: "Choose either a replacement API key or clear the existing key." });
+    }
+
+    if (body.clearApiKey) {
+      await repository.clearWorkspaceAIProviderSettings({ workspaceId: req.auth.workspaceId });
+      await recordAudit(req, {
+        action: "settings.ai_provider_cleared",
+        resourceType: "workspace",
+        resourceId: req.auth.workspaceId,
+        metadata: { provider: "OpenAI-compatible" },
+      });
+      res.setHeader("Cache-Control", "no-store");
+      return res.json(workspaceAIProviderPublicSettings(null));
+    }
+
+    const current = await repository.getWorkspaceAIProviderSettings({
+      workspaceId: req.auth.workspaceId,
+    });
+    if (!apiKey && !current?.apiKeyConfigured) {
+      return res.status(400).json({ error: "Enter an API key to enable workspace-level AI usage." });
+    }
+    const model = typeof body.model === "string" ? body.model.trim() : "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(model)) {
+      return res.status(400).json({ error: "Model ID must be 1–128 letters, numbers, or . _ : / - characters." });
+    }
+
+    const saved = await repository.saveWorkspaceAIProviderSettings({
+      workspaceId: req.auth.workspaceId,
+      encryptedApiKey: apiKey ? encryptSecret(apiKey) : null,
+      model,
+    });
+    await recordAudit(req, {
+      action: "settings.ai_provider_updated",
+      resourceType: "workspace",
+      resourceId: req.auth.workspaceId,
+      metadata: {
+        provider: "OpenAI-compatible",
+        model,
+        apiKeyMode: apiKey ? "replaced" : "kept",
+      },
+    });
+    res.setHeader("Cache-Control", "no-store");
+    res.json(workspaceAIProviderPublicSettings(saved));
   } catch (error) {
     next(error);
   }
@@ -1429,6 +1865,21 @@ app.get("/api/incidents/summary", async (req, res, next) => {
   }
 });
 
+app.get("/api/incidents/:incidentId", async (req, res, next) => {
+  try {
+    if (!(await requireEntitlement(req, res, "incidentCenter", "Incident Center requires Builder or a higher plan."))) return;
+    const incident = await repository.getIncident({
+      workspaceId: req.auth.workspaceId,
+      incidentId: req.params.incidentId,
+    });
+    if (!incident) return res.status(404).json({ error: "Incident not found." });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ incident });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/incidents/:incidentId/read", async (req, res, next) => {
   try {
     if (!(await requireEntitlement(req, res, "incidentCenter", "Incident Center requires Builder or a higher plan."))) return;
@@ -1619,6 +2070,21 @@ app.get("/api/sentinel", async (req, res, next) => {
   }
 });
 
+app.get("/api/sentinel/events/:eventId", async (req, res, next) => {
+  try {
+    if (!(await requireEntitlement(req, res, "sentinel", "Sentinel drift monitoring requires Pro or a higher plan."))) return;
+    const event = await repository.getSentinelDriftEvent({
+      workspaceId: req.auth.workspaceId,
+      eventId: req.params.eventId,
+    });
+    if (!event) return res.status(404).json({ error: "Sentinel drift event not found." });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ event });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/agents/:agentId/sentinel", async (req, res, next) => {
   try {
     if (!(await requireEntitlement(req, res, "sentinel", "Sentinel drift monitoring requires Pro or a higher plan."))) return;
@@ -1790,6 +2256,21 @@ app.get("/api/agents/:agentId/runtime/events", async (req, res, next) => {
     const agent = await repository.getAgent(req.params.agentId, req.auth.workspaceId);
     if (!agent) return res.status(404).json({ error: "Agent not found." });
     res.json({ events: await repository.listRuntimeEvents({ workspaceId: req.auth.workspaceId, agentId: agent.id }) });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/agents/:agentId/runtime/events/:requestId", async (req, res, next) => {
+  try {
+    const agent = await repository.getAgent(req.params.agentId, req.auth.workspaceId);
+    if (!agent) return res.status(404).json({ error: "Agent not found." });
+    const event = await repository.getRuntimeEvent({
+      workspaceId: req.auth.workspaceId,
+      agentId: agent.id,
+      requestId: req.params.requestId,
+    });
+    if (!event) return res.status(404).json({ error: "Runtime event not found." });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ event });
   } catch (error) { next(error); }
 });
 
@@ -2444,6 +2925,7 @@ app.use((error, req, res, next) => {
 });
 
 async function start() {
+  startRuntimeTelemetry();
   await migrate();
   await seedDevelopmentData();
   const scanWorker = startScanWorker();
@@ -2468,6 +2950,14 @@ async function start() {
     clearInterval(incidentTimer);
     clearInterval(retentionTimer);
     clearInterval(paymentReconciliationTimer);
+    closeWorkspaceActivityStreams();
+    await stopWorkspaceActivityHub().catch((activityError) => {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "workspace_activity_shutdown_failed",
+        errorName: activityError instanceof Error ? activityError.name : "UnknownError",
+      }));
+    });
     const forceClose = setTimeout(() => {
       console.error("AgentGuard API graceful shutdown timed out; closing active connections.");
       server.closeAllConnections?.();
@@ -2477,6 +2967,13 @@ async function start() {
     try {
       await new Promise((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
+      });
+      await shutdownRuntimeTelemetry().catch((telemetryError) => {
+        console.error(JSON.stringify({
+          level: "error",
+          event: "runtime_telemetry_shutdown_failed",
+          errorName: telemetryError instanceof Error ? telemetryError.name : "UnknownError",
+        }));
       });
       await closeDatabase();
       console.log("AgentGuard API shutdown complete.");
@@ -2493,6 +2990,9 @@ async function start() {
 
 start().catch(async (error) => {
   console.error("AgentGuard API failed to start:", error.message);
+  closeWorkspaceActivityStreams();
+  await stopWorkspaceActivityHub().catch(() => {});
+  await shutdownRuntimeTelemetry().catch(() => {});
   await closeDatabase().catch(() => {});
   process.exitCode = 1;
 });

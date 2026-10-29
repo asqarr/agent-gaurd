@@ -7,7 +7,8 @@ import { config } from "./config.mjs";
 const { Pool } = pg;
 export const pool = new Pool({
   connectionString: config.databaseUrl,
-  max: 10,
+  max: config.databasePoolMax,
+  connectionTimeoutMillis: config.databaseConnectionTimeoutMs,
   idleTimeoutMillis: 30000,
 });
 

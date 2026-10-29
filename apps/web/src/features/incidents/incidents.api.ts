@@ -9,6 +9,10 @@ export async function getIncidents(status: "open" | "resolved" | "all" = "open")
   return request(`/api/incidents?status=${status}`).then((response) => response.json()).then((body) => body.incidents);
 }
 
+export async function getIncident(incidentId: string): Promise<Incident> {
+  return request(`/api/incidents/${encodeURIComponent(incidentId)}`).then((response) => response.json()).then((body) => body.incident);
+}
+
 export async function getAuditEvents(): Promise<AuditEvent[]> {
   return request("/api/audit?limit=12").then((response) => response.json()).then((body) => body.events);
 }

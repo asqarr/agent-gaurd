@@ -29,6 +29,7 @@ export type WorkspaceSettings = {
     agentCount: number;
   };
   members: WorkspaceMember[];
+  membersTruncated: boolean;
   security: {
     passwordChangedAt: string | null;
     sessionDurationDays: number;
@@ -37,6 +38,16 @@ export type WorkspaceSettings = {
     emailVerified: boolean;
     mfaEnabled: boolean;
   };
+};
+
+export type WorkspaceAIProviderSettings = {
+  provider: "OpenAI-compatible";
+  apiKeyConfigured: boolean;
+  activeSource: "workspace" | "platform" | "none";
+  model: string | null;
+  platformFallbackAvailable: boolean;
+  platformModel: string | null;
+  updatedAt: string | null;
 };
 
 export type Agent = {
@@ -71,6 +82,19 @@ export type SentinelChange = {
   to: unknown;
   severity: Exclude<SentinelSeverity, "none">;
   impact: string;
+};
+
+export type SentinelDriftEvent = {
+  id: string;
+  baselineId: string | null;
+  fingerprint: string;
+  severity: Exclude<SentinelSeverity, "none">;
+  status: "open" | "resolved";
+  changes: SentinelChange[];
+  detectedAt: string;
+  resolvedAt: string | null;
+  agentId: string;
+  agentName: string;
 };
 
 export type SentinelState = {
@@ -167,16 +191,31 @@ export type AlertWebhook = {
   createdAt: string;
 };
 
+export type RuntimeTraceSpan = {
+  traceId: string;
+  spanId: string;
+  parentSpanId: string | null;
+  name: string;
+  stage: string;
+  outcome: string;
+  decision?: "ALLOW" | "BLOCK";
+  toolCount?: number;
+  startedAt: string;
+  durationMs: number;
+};
+
 export type RuntimeEvent = {
   id: string;
   requestId: string;
-  decision: "ALLOW" | "BLOCK";
+  decision: "ALLOW" | "BLOCK" | null;
   toolName: string;
   reasons: string[];
   latencyMs: number;
   outcome?: "decision" | "error" | "quota";
   errorCode?: string | null;
   failureStage?: string | null;
+  traceId?: string | null;
+  traceSpans?: RuntimeTraceSpan[];
   createdAt: string;
 };
 
@@ -206,6 +245,21 @@ export type RuntimeHealth = {
   recentIssues: RuntimeHealthIssue[];
   observedOnly: true;
   observedAt: string;
+};
+
+export type WorkspaceActivity = {
+  id: string;
+  type: string;
+  category: "scan" | "runtime" | "sentinel" | "incident" | "copilot";
+  severity: "info" | "success" | "warning" | "critical";
+  title: string;
+  explanation: string;
+  agentId: string | null;
+  agentName: string | null;
+  resourceType: string | null;
+  resourceId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
 };
 
 export type EnforcementVerificationCheck = {

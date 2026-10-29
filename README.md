@@ -18,7 +18,7 @@ This repository now contains the first production-shaped backend slice:
 - Live scans persist and stream per-scenario progress, so the dashboard shows the active test, elapsed time, and each scenario's queued/running/passed/blocked/finding state while the worker runs.
 - Agent management is live: workspace owners/admins can edit connections, rotate or clear encrypted API keys, select allowed tools, test connectivity without running a scan, and delete agents with confirmation.
 - Security response is live: workspace owners/admins can quarantine an agent with a reason. Quarantine persists in PostgreSQL, blocks new scans at the API boundary, is re-checked by the worker before execution, and can only be cleared with an explicit Restore action.
-- Runtime protection is live: owners/admins can provision a scoped gateway token for an agent. Customer traffic sent to the Runtime Firewall is forwarded to the agent, inspected against the workspace policy and tool scope, and returned fail-closed when an unsafe tool call is proposed. Every decision is persisted as a runtime event.
+- Runtime protection is live: owners/admins can provision a scoped gateway token for an agent. Customer traffic sent to the Runtime Firewall is forwarded to the agent, inspected against the workspace policy and tool scope, and returned fail-closed when an unsafe tool call is proposed. Every decision is persisted as a runtime event with an OpenTelemetry trace timeline, correlated to a caller trace when the SDK has an active W3C trace context.
 - Agent Security Autopilot is live: one assessment checks the endpoint, inventories configured and observed tools, runs the complete adversarial suite, produces a server-generated Security Blueprint, and lets an owner/admin review and apply Runtime Firewall protection without changing business policy values.
 - Public SEO is separated from the authenticated dashboard: the root is a crawlable marketing page, `/agent-security-testing.html` and `/prompt-injection-testing.html` are indexable content pages, and `/app.html` is explicitly `noindex`.
 - The public `/attack-lab.html` is a synthetic-only interactive demo backed by the same deterministic refund Policy Engine and approval-binding checks as Runtime Firewall. Its public API accepts only fixed challenge IDs and bounded numeric values, is rate-limited, and has no customer endpoint or side-effect executor; demo evidence is explicitly not a customer-agent assessment.
@@ -42,7 +42,7 @@ The source tree is organized by product capability rather than by technical file
 
 ## Run locally
 
-Prerequisites: Node.js 22.12+ (Node.js 24 LTS is the deployment runtime), Docker Desktop, and Docker Compose.
+Prerequisites: Node.js 22.15+ (Node.js 24 LTS is the deployment runtime), Docker Desktop, and Docker Compose.
 
 Install dependencies and copy environment settings:
 
@@ -51,11 +51,13 @@ npm install
 copy .env.example .env
 ```
 
-Start PostgreSQL:
+Start PostgreSQL and the local Jaeger trace viewer:
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres jaeger
 ```
+
+Local API traces are sent to `http://localhost:4318` without authentication. Open `http://127.0.0.1:16686` to inspect them in Jaeger. The local Jaeger all-in-one uses in-memory storage, so its trace history is cleared when the container restarts. Production keeps OTLP export disabled by default; set the production endpoint and provider-specific headers only when connecting an external collector.
 
 The API automatically creates the migration table, applies the files in `apps/api/migrations/`, seeds a development workspace, and starts the scan worker.
 
@@ -124,6 +126,10 @@ docker compose --env-file .env.production -f docker-compose.prod.yml config
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 ```
 
+The web proxy resolves API container addresses dynamically and balances requests across API replicas. After sizing PostgreSQL, scale the stateless API with `docker compose --env-file .env.production -f docker-compose.prod.yml up -d --scale api=3`. `DATABASE_POOL_MAX` is per API process: keep `replicas × DATABASE_POOL_MAX` below the database connection budget and reserve connections for backups, migrations, monitoring, and administration. The default is 20; reduce it when adding replicas or using a managed database with a smaller connection limit. Load-test the target host and database before increasing replicas further.
+
+Repeat a finite authenticated read-path smoke test with `LOAD_TEST_URL`, `LOAD_TEST_EMAIL`, `LOAD_TEST_PASSWORD`, `LOAD_TEST_PATH=/api/overview`, `LOAD_TEST_REQUESTS=1000`, and `LOAD_TEST_CONCURRENCY=1000`, then run `npm run load:smoke`. The tool prints status counts and p50/p95/p99 latency without printing credentials or response bodies.
+
 Set `DOMAIN`, `WEB_ORIGIN`, and `VITE_SITE_URL` to the same public host, and provide a monitored operations email in `ACME_EMAIL`. Point the domain's A/AAAA records at the VPS and allow inbound TCP 80/443 plus UDP 443; Caddy obtains and renews HTTPS certificates and redirects HTTP to HTTPS. Do not publish PostgreSQL or enable `ALLOW_PRIVATE_AGENT_ENDPOINTS` in production.
 
 `TRUST_PROXY` accepts a non-negative integer hop count (the production Compose default is `2` for the configured proxy chain), or the legacy boolean values `true`/`false`. Set it to the number of trusted proxies actually in front of the API; invalid values stop API startup with a configuration error.
@@ -144,7 +150,13 @@ The dashboard waits up to 10 minutes for a scan to reach a terminal state, which
 
 The Copilot is an optional assistant on vulnerable or inconclusive scan findings. It uses the Vercel AI SDK with an OpenAI-compatible model endpoint, streams a bounded structured plan into the finding, and persists the validated result for the scan's retention period. It does not call tools, edit policies, apply changes, or make ALLOW/BLOCK decisions. The deterministic policy and Runtime Firewall remain the enforcement boundary.
 
-Set `AI_API_KEY` and `AI_MODEL` on the API service to enable it. `AI_BASE_URL` defaults to `https://api.openai.com/v1` and can point to another HTTPS OpenAI-compatible endpoint that supports structured JSON output. Leave the key or model unset to keep the Copilot disabled. `AI_COPILOT_RATE_LIMIT_MAX` caps requests per workspace during `AI_COPILOT_RATE_LIMIT_WINDOW_MS`; successful results are cached per scan and scenario, with prompt and schema versions recorded for safe refreshes. The model receives the scenario catalog facts, verdict and execution boundary, the policy version and numeric limits, and AgentGuard's deterministic remediation guidance. It never receives raw agent output, customer messages, tool argument values, scan/order/customer identifiers, customer agent URLs, or agent/customer credentials. The provider is authenticated with `AI_API_KEY`.
+Workspace owners and admins can add their own OpenAI-compatible API key and model in **Workspace Settings → AI Remediation Copilot**. The key is encrypted at rest, never returned by the API, and used only for Copilot generation. When a workspace key is absent, the service can fall back to platform `AI_API_KEY` and `AI_MODEL`; leave both unset to keep generation disabled. `AI_BASE_URL` defaults to `https://api.openai.com/v1` and can point to another HTTPS OpenAI-compatible endpoint that supports structured JSON output. Workspace users cannot set a custom URL, so their key is sent only to the endpoint configured by the service operator. `AI_COPILOT_RATE_LIMIT_MAX` caps requests per workspace during `AI_COPILOT_RATE_LIMIT_WINDOW_MS`; successful results are cached per scan and scenario, with prompt and schema versions recorded for safe refreshes. A saved plan can be explicitly regenerated with the currently configured provider. The model receives the scenario catalog facts, verdict and execution boundary, the policy version and numeric limits, and AgentGuard's deterministic remediation guidance. It never receives raw agent output, customer messages, tool argument values, scan/order/customer identifiers, customer agent URLs, or agent/customer credentials.
+
+### Runtime execution traces
+
+Every admitted Runtime invocation gets an OpenTelemetry trace with safe spans for quota reservation, the customer-agent request, policy evaluation, and one-time approval issuance. The W3C `traceparent` from an instrumented caller is propagated through the AgentGuard SDK and onward to the customer endpoint. Trace summaries are stored with each workspace-scoped Runtime event and appear as expandable timelines in the agent dashboard. Timelines intentionally omit prompts, tool arguments, endpoint URLs, and customer secrets; the customer application performs the final tool execution after it consumes an approval, so AgentGuard does not claim to observe that external side effect.
+
+The dashboard timeline works without an external telemetry service. Local development exports safe runtime spans to the Jaeger service in `docker-compose.yml` through OTLP HTTP/protobuf; set `OTEL_EXPORTER_OTLP_ENDPOINT` and optional `OTEL_EXPORTER_OTLP_HEADERS` to use another OpenTelemetry Collector or compatible backend. `OTEL_SERVICE_NAME` defaults to `agentguard-api`. Only the API's safe runtime spans are exported.
 
 Main endpoints: `/api/health`, `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/overview`, `/api/billing`, `/api/billing/plans`, `/api/billing/usage-metrics`, `/api/billing/service-orders`, `/api/billing/checkout`, `/api/billing/checkout/:id`, `/api/billing/verify-payment`, `/api/agents`, `/api/tools`, `/api/scenarios`, `/api/scans`, `/api/policies`, `/api/audit`, and `/api/autopilot/assessments`. Agent management uses `PATCH /api/agents/:id`, `POST /api/agents/:id/test-connection`, `POST /api/agents/:id/quarantine`, `POST /api/agents/:id/restore`, and `DELETE /api/agents/:id`.
 

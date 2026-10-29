@@ -1,8 +1,31 @@
 import { request } from "../../shared/api/client";
-import type { SessionUser, WorkspaceSettings } from "../../shared/types/api";
+import type { SessionUser, WorkspaceAIProviderSettings, WorkspaceSettings } from "../../shared/types/api";
 
 export async function getSettings(): Promise<WorkspaceSettings> {
   const response = await request("/api/settings");
+  return response.json();
+}
+
+export async function getAIProviderSettings(): Promise<WorkspaceAIProviderSettings> {
+  const response = await request("/api/settings/ai-provider");
+  return response.json();
+}
+
+export async function updateAIProviderSettings({ apiKey, model }: { apiKey?: string; model: string }): Promise<WorkspaceAIProviderSettings> {
+  const response = await request("/api/settings/ai-provider", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey, model }),
+  });
+  return response.json();
+}
+
+export async function clearAIProviderSettings(): Promise<WorkspaceAIProviderSettings> {
+  const response = await request("/api/settings/ai-provider", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clearApiKey: true }),
+  });
   return response.json();
 }
 

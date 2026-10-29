@@ -24,10 +24,15 @@ import { IncidentCenterPage } from "../features/incidents/IncidentCenterPage";
 import { SecurityContractPage } from "../features/contracts/SecurityContractPage";
 import { getIncidentSummary, markIncidentRead } from "../features/incidents/incidents.api";
 import { SetupCenter } from "../features/setup/SetupCenter";
+import { GuidePage } from "../features/guide/GuidePage";
 import { SettingsPage } from "../features/settings/SettingsPage";
+import { WorkspaceActivityPage } from "../features/activity/WorkspaceActivityPage";
+import { ActivityEventDetails } from "../features/activity/ActivityEventDetails";
+import { useWorkspaceActivity, type ActivityConnection } from "../features/activity/useWorkspaceActivity";
 import type {
   Agent,
   AgentConnection,
+  WorkspaceActivity,
   Overview,
   Scan,
   RuntimeEvent,
@@ -256,6 +261,12 @@ function WorkspaceView({
   authUser,
   onUserUpdated,
   onLogout,
+  activityEvents,
+  activityConnection,
+  activityHistoryNotice,
+  activityHasMore,
+  activityLoadingOlder,
+  onLoadOlderActivity,
 }: {
   active: string;
   agents: Agent[];
@@ -278,6 +289,12 @@ function WorkspaceView({
   authUser: SessionUser;
   onUserUpdated: (user: SessionUser) => void;
   onLogout: () => void;
+  activityEvents: WorkspaceActivity[];
+  activityConnection: ActivityConnection;
+  activityHistoryNotice: string;
+  activityHasMore: boolean;
+  activityLoadingOlder: boolean;
+  onLoadOlderActivity: () => void;
 }) {
   const [agentName, setAgentName] = useState("");
   const [endpoint, setEndpoint] = useState("");
@@ -307,6 +324,7 @@ function WorkspaceView({
   const [selectedScan, setSelectedScan] = useState<Scan | null>(null);
   const [scanDetailBusy, setScanDetailBusy] = useState(false);
   const [scanDetailError, setScanDetailError] = useState("");
+  const [selectedActivityEvent, setSelectedActivityEvent] = useState<WorkspaceActivity | null>(null);
   const [editingAgent, setEditingAgent] = useState(false);
   const [editAgentName, setEditAgentName] = useState("");
   const [editEndpoint, setEditEndpoint] = useState("");
@@ -334,6 +352,10 @@ function WorkspaceView({
     ? overview.recentScans.find((scan) => scan.agentId === selected.id && scan.status === "completed")
     : undefined;
   const selectedDisplayScore = selectedLatestScan?.score ?? selected?.score ?? null;
+
+  useEffect(() => {
+    if (active !== "Live Feed") setSelectedActivityEvent(null);
+  }, [active]);
 
   useEffect(() => {
     setPolicyName(overview.policy.name);
@@ -364,15 +386,20 @@ function WorkspaceView({
     setRuntimeEvents([]);
     if (!selected?.runtimeEnabled) return undefined;
     let activeRequest = true;
-    getRuntimeEvents(selected.id)
-      .then((events) => {
-        if (activeRequest) setRuntimeEvents(events);
-      })
-      .catch((caught) => {
-        if (activeRequest) setRuntimeError(caught instanceof Error ? caught.message : "Runtime events could not be loaded.");
-      });
+    const loadEvents = () => {
+      getRuntimeEvents(selected.id)
+        .then((events) => {
+          if (activeRequest) setRuntimeEvents(events);
+        })
+        .catch((caught) => {
+          if (activeRequest) setRuntimeError(caught instanceof Error ? caught.message : "Runtime events could not be loaded.");
+        });
+    };
+    loadEvents();
+    const refreshTimer = window.setInterval(loadEvents, 15_000);
     return () => {
       activeRequest = false;
+      window.clearInterval(refreshTimer);
     };
   }, [selectedAgent, selected?.runtimeEnabled]);
 
@@ -772,6 +799,55 @@ function WorkspaceView({
         onRunScan={onScan}
         scanBusy={scanning}
       />
+    );
+  }
+
+  if (active === "Guide") {
+    return (
+      <GuidePage
+        onNavigate={onNavigate}
+        onQuickStart={onQuickStart}
+        quickStartBusy={quickStartBusy}
+      />
+    );
+  }
+
+  if (active === "Live Feed") {
+    return (
+      <>
+        <WorkspaceActivityPage
+          events={activityEvents}
+          connection={activityConnection}
+          historyNotice={activityHistoryNotice}
+          hasMore={activityHasMore}
+          loadingOlder={activityLoadingOlder}
+          onLoadOlder={onLoadOlderActivity}
+          onInspectEvent={setSelectedActivityEvent}
+          onNavigate={onNavigate}
+        />
+        {selectedActivityEvent ? (
+          <ActivityEventDetails
+            event={selectedActivityEvent}
+            agents={agents}
+            authUser={authUser}
+            onClose={() => setSelectedActivityEvent(null)}
+            onAgentUpdated={onAgentUpdated}
+            onNavigate={(page, event) => {
+              setSelectedActivityEvent(null);
+              if (event?.agentId) setSelectedAgent(event.agentId);
+              onNavigate(page);
+              if (page === "Scans" && event?.resourceId) {
+                const scanId = event.resourceType === "scan_scenario"
+                  ? event.resourceId.split(":", 1)[0]
+                  : event.resourceType === "scan"
+                    ? event.resourceId
+                    : null;
+                if (scanId) void openScanEvidence(scanId);
+              }
+            }}
+          />
+        ) : null}
+      </>
     );
   }
 
@@ -1446,6 +1522,10 @@ function App() {
   const [notifications, setNotifications] = useState<Incident[]>([]);
   const [incidentSummary, setIncidentSummary] = useState({ open: 0, unread: 0, critical: 0 });
   const [upgradeRequest, setUpgradeRequest] = useState<UpgradeRequest | null>(null);
+  const activity = useWorkspaceActivity(
+    authState === "authenticated" ? authUser?.workspaceId ?? null : null,
+    active === "Live Feed",
+  );
 
   useEffect(() => {
     const handleUpgradeRequired = (event: Event) => {
@@ -1669,7 +1749,9 @@ function App() {
 
   const nav = [
     { label: "Overview", icon: "grid" as IconName },
+    { label: "Live Feed", icon: "activity" as IconName, count: activity.unreadCount ? (activity.unreadCount >= 99 ? "99+" : activity.unreadCount) : undefined },
     { label: "Launchpad", icon: "activity" as IconName },
+    { label: "Guide", icon: "library" as IconName },
     { label: "Agents", icon: "bot" as IconName, count: agents.length },
     { label: "Autopilot", icon: "activity" as IconName },
     { label: "Sentinel", icon: "shield" as IconName },
@@ -1818,6 +1900,17 @@ function App() {
               />
               {connected ? "API connected" : "Local preview"}
             </div>
+            <button
+              type="button"
+              className={`activity-topbar-status activity-topbar-status--${activity.connection}`}
+              onClick={() => setActive("Live Feed")}
+              aria-label={`Open live activity. Stream ${activity.connection}${activity.unreadCount ? `, ${activity.unreadCount} unread` : ""}`}
+              title="Open workspace live activity"
+            >
+              <i />
+              <span>{activity.connection === "live" ? "LIVE" : activity.connection === "reconnecting" ? "RECONNECTING" : activity.connection === "connecting" ? "CONNECTING" : "ACTIVITY"}</span>
+              {activity.unreadCount ? <b>{activity.unreadCount > 99 ? "99+" : activity.unreadCount}</b> : null}
+            </button>
             <button
               className="icon-button"
               onClick={() => {
@@ -2226,6 +2319,36 @@ function App() {
                 Manage policy <Icon name="arrow" size={15} />
               </button>
             </div>
+            <section className="panel activity-preview">
+              <div className="panel-heading">
+                <div>
+                  <span className="eyebrow">LIVE WORKSPACE SIGNALS</span>
+                  <h2>Security activity</h2>
+                </div>
+                <button className="text-button" onClick={() => setActive("Live Feed")}>
+                  Open live feed <Icon name="arrow" size={14} />
+                </button>
+              </div>
+              {activity.events.length ? (
+                <ol className="activity-preview__list">
+                  {activity.events.slice(0, 4).map((event) => (
+                    <li key={event.id} className={`activity-preview__item activity-preview__item--${event.severity}`}>
+                      <span className="activity-preview__dot" />
+                      <div>
+                        <strong>{event.title}</strong>
+                        <p>{event.explanation}</p>
+                      </div>
+                      <time title={new Date(event.createdAt).toLocaleString()}>{formatRelativeDate(event.createdAt)}</time>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <div className="activity-preview__empty">
+                  <Icon name="activity" size={17} />
+                  <span>{activity.connection === "live" ? "Listening for persisted security events…" : "Connecting to the workspace activity stream…"}</span>
+                </div>
+              )}
+            </section>
           </section>
         ) : (
           <WorkspaceView
@@ -2260,6 +2383,12 @@ function App() {
               setToast("Account settings saved");
             }}
             onLogout={() => void handleLogout()}
+            activityEvents={activity.events}
+            activityConnection={activity.connection}
+            activityHistoryNotice={activity.historyNotice}
+            activityHasMore={activity.hasMore}
+            activityLoadingOlder={activity.loadingOlder}
+            onLoadOlderActivity={() => void activity.loadOlder()}
           />
         )}
         <footer className="page-footer">

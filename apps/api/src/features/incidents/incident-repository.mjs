@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { withTransaction } from "../../core/db.mjs";
 import { incidentTitle } from "./domain.mjs";
+import { appendWorkspaceActivitySafely } from "../activity/activity-repository.mjs";
 
 function mapIncident(row) {
   if (!row) return null;
@@ -36,7 +37,7 @@ export async function createIncidentNotification({
   metadata = {},
 }) {
   const notificationId = `incident-${randomUUID()}`;
-  return withTransaction(async (client) => {
+  const result = await withTransaction(async (client) => {
     const inserted = await client.query(
       `INSERT INTO incident_notifications
        (id, workspace_id, agent_id, event_type, severity, title, message, dedupe_key, resource_type, resource_id, metadata)
@@ -77,6 +78,38 @@ export async function createIncidentNotification({
        WHERE n.workspace_id=$1 AND n.dedupe_key=$2 AND n.status='open'`,
       [workspaceId, dedupeKey],
     )).rows[0];
-    return mapIncident(current ?? { ...inserted.rows[0], agent_name: agentName });
+    return {
+      incident: mapIncident(current ?? { ...inserted.rows[0], agent_name: agentName }),
+      created: inserted.rowCount > 0,
+    };
   });
+
+  if (result.created) {
+    const activityType = eventType === "sentinel_drift"
+      ? "sentinel.drift_detected"
+      : eventType === "agent_quarantined"
+        ? "agent.quarantined"
+        : eventType === "scan_failed"
+          ? "scan.failed"
+          : eventType === "runtime_block"
+            ? null
+            : "incident.opened";
+    if (activityType) {
+      await appendWorkspaceActivitySafely({
+        workspaceId,
+        agentId,
+        agentName,
+        eventType: activityType,
+        resourceType: activityType === "incident.opened" ? "incident" : resourceType,
+        resourceId: activityType === "incident.opened" ? result.incident?.id : resourceId,
+        metadata: {
+          incidentType: eventType,
+          incidentSeverity: severity,
+          driftSeverity: eventType === "sentinel_drift" ? severity : undefined,
+          changeCount: eventType === "sentinel_drift" ? metadata?.changes?.length : undefined,
+        },
+      });
+    }
+  }
+  return result.incident;
 }

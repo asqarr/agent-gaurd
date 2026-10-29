@@ -1,8 +1,11 @@
 import { config } from "../../core/config.mjs";
+import { withAdvisoryLock } from "../../core/db.mjs";
 import { captureUsageStorageSnapshots, purgeExpiredEvidence } from "../../infrastructure/repository.mjs";
 import { purgeExpiredGrowthEvents } from "../growth-analytics/repository.mjs";
 
-export async function processEvidenceRetention() {
+let running = false;
+
+async function runEvidenceRetention() {
   const result = await purgeExpiredEvidence();
   let deletedGrowthEvents = 0;
   try {
@@ -36,6 +39,17 @@ export async function processEvidenceRetention() {
     console.log(JSON.stringify({ event: "growth_analytics.retention_purged", deleted: deletedGrowthEvents }));
   }
   return { ...result, deletedGrowthEvents, storage };
+}
+
+export async function processEvidenceRetention() {
+  if (running) return null;
+  running = true;
+  try {
+    const result = await withAdvisoryLock("agentguard:evidence-retention", runEvidenceRetention);
+    return result.acquired ? result.value : null;
+  } finally {
+    running = false;
+  }
 }
 
 export function startRetentionWorker() {

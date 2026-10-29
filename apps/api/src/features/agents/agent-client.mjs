@@ -231,14 +231,18 @@ export async function testAgentConnection(agent, { lookup } = {}) {
   };
 }
 
-export async function requestAgentInput(agent, { input, metadata = {}, lookup } = {}) {
+export async function requestAgentInput(agent, { input, metadata = {}, lookup, requestId, traceparent } = {}) {
   if (!agent.endpoint) {
     throw new Error("A customer agent endpoint is required for runtime protection.");
   }
 
   const resolved = await resolveSafeAgentEndpoint(agent.endpoint, { lookup });
   const { endpoint, address, family } = resolved;
-  const headers = { "Content-Type": "application/json" };
+  const headers = {
+    "Content-Type": "application/json",
+    ...(requestId ? { "X-AgentGuard-Request-Id": requestId } : {}),
+    ...(typeof traceparent === "string" ? { traceparent } : {}),
+  };
   const apiKey = decryptSecret(agent.encryptedApiKey);
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 

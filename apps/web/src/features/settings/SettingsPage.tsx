@@ -1,15 +1,18 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
   changePassword,
+  clearAIProviderSettings,
   confirmMfa,
   deleteWorkspace,
   disableMfa,
+  getAIProviderSettings,
   getSettings,
   startMfaSetup,
   updateProfile,
+  updateAIProviderSettings,
   updateWorkspace,
 } from "./settings.api";
-import type { SessionUser, WorkspaceSettings } from "../../shared/types/api";
+import type { SessionUser, WorkspaceAIProviderSettings, WorkspaceSettings } from "../../shared/types/api";
 import { Icon } from "../../shared/ui/Icon";
 
 function formatDate(value: string | null | undefined) {
@@ -56,6 +59,7 @@ export function SettingsPage({
   onLogout: () => void;
 }) {
   const [settings, setSettings] = useState<WorkspaceSettings | null>(null);
+  const [aiProviderSettings, setAIProviderSettings] = useState<WorkspaceAIProviderSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [profileName, setProfileName] = useState(authUser.name);
@@ -68,6 +72,11 @@ export function SettingsPage({
   const [passwordMessage, setPasswordMessage] = useState("");
   const [profileError, setProfileError] = useState("");
   const [workspaceError, setWorkspaceError] = useState("");
+  const [aiApiKey, setAIApiKey] = useState("");
+  const [aiModel, setAIModel] = useState("gpt-4o-mini");
+  const [aiProviderBusy, setAIProviderBusy] = useState(false);
+  const [aiProviderMessage, setAIProviderMessage] = useState("");
+  const [aiProviderError, setAIProviderError] = useState("");
   const [passwordError, setPasswordError] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -89,8 +98,10 @@ export function SettingsPage({
     setLoading(true);
     setLoadError("");
     try {
-      const next = await getSettings();
+      const [next, aiProvider] = await Promise.all([getSettings(), getAIProviderSettings()]);
       setSettings(next);
+      setAIProviderSettings(aiProvider);
+      setAIModel(aiProvider.model ?? aiProvider.platformModel ?? "gpt-4o-mini");
       setProfileName(next.user.name);
       setWorkspaceName(next.workspace.name);
     } catch (caught) {
@@ -157,6 +168,44 @@ export function SettingsPage({
       );
     } finally {
       setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitAIProvider(event: FormEvent) {
+    event.preventDefault();
+    setAIProviderBusy(true);
+    setAIProviderMessage("");
+    setAIProviderError("");
+    try {
+      const next = await updateAIProviderSettings({
+        ...(aiApiKey ? { apiKey: aiApiKey } : {}),
+        model: aiModel,
+      });
+      setAIProviderSettings(next);
+      setAIModel(next.model ?? next.platformModel ?? "gpt-4o-mini");
+      setAIApiKey("");
+      setAIProviderMessage("Workspace AI provider settings are saved.");
+    } catch (caught) {
+      setAIProviderError(caught instanceof Error ? caught.message : "AI provider settings could not be saved.");
+    } finally {
+      setAIProviderBusy(false);
+    }
+  }
+
+  async function removeAIProviderKey() {
+    setAIProviderBusy(true);
+    setAIProviderMessage("");
+    setAIProviderError("");
+    try {
+      const next = await clearAIProviderSettings();
+      setAIProviderSettings(next);
+      setAIModel(next.model ?? next.platformModel ?? "gpt-4o-mini");
+      setAIApiKey("");
+      setAIProviderMessage("Workspace API key removed. The platform default will be used if available.");
+    } catch (caught) {
+      setAIProviderError(caught instanceof Error ? caught.message : "Workspace API key could not be removed.");
+    } finally {
+      setAIProviderBusy(false);
     }
   }
 
@@ -406,6 +455,73 @@ export function SettingsPage({
             </div>
           </form>
 
+          <form className="panel settings-card" onSubmit={submitAIProvider}>
+            <div className="settings-card__heading">
+              <div className="settings-card__icon settings-card__icon--green">
+                <Icon name="sparkle" size={18} />
+              </div>
+              <div>
+                <span className="eyebrow">BRING YOUR OWN KEY</span>
+                <h3>AI Remediation Copilot</h3>
+                <p>Use your OpenAI-compatible API account for AI fix plans generated from scan evidence.</p>
+              </div>
+            </div>
+            <div className="settings-form-grid">
+              <label className="settings-field">
+                <span>Provider API key</span>
+                <input
+                  type="password"
+                  value={aiApiKey}
+                  onChange={(event) => setAIApiKey(event.target.value)}
+                  placeholder={aiProviderSettings?.apiKeyConfigured ? "Saved securely; enter a replacement" : "Paste your provider API key"}
+                  autoComplete="new-password"
+                  maxLength={2048}
+                  disabled={!canManageWorkspace}
+                  required={!aiProviderSettings?.apiKeyConfigured}
+                />
+                <small>{aiProviderSettings?.apiKeyConfigured ? "Leave blank to keep the saved key. The key is never returned by the API." : "Required to enable workspace-level AI usage."}</small>
+              </label>
+              <label className="settings-field">
+                <span>Model ID</span>
+                <input
+                  value={aiModel}
+                  onChange={(event) => setAIModel(event.target.value)}
+                  placeholder="gpt-4o-mini"
+                  pattern="[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}"
+                  maxLength={128}
+                  disabled={!canManageWorkspace}
+                  required
+                />
+                <small>Used with the platform's configured OpenAI-compatible endpoint.</small>
+              </label>
+            </div>
+            <div className={`settings-ai-provider-status settings-ai-provider-status--${aiProviderSettings?.activeSource ?? "none"}`}>
+              <i />
+              <span>
+                {aiProviderSettings?.activeSource === "workspace"
+                  ? `Workspace key active · ${aiProviderSettings.model}`
+                  : aiProviderSettings?.activeSource === "platform"
+                    ? `Platform default active · ${aiProviderSettings.platformModel}`
+                    : "No AI provider is configured yet."}
+              </span>
+            </div>
+            <p className="settings-ai-provider-note">The key is encrypted at rest and is used only by the Remediation Copilot. It is not sent to your agent endpoint, included in scan evidence, or written to audit logs. Removing it returns to the platform default if one is configured.</p>
+            {!canManageWorkspace ? <small className="settings-ai-provider-note">Only workspace owners and admins can change AI provider credentials.</small> : null}
+            <div className="settings-card__footer">
+              <SettingsMessage message={aiProviderError} tone="error" />
+              <SettingsMessage message={aiProviderMessage} />
+              {canManageWorkspace ? (
+                <>
+                  {aiProviderSettings?.apiKeyConfigured ? <button type="button" className="button button--subtle" onClick={() => void removeAIProviderKey()} disabled={aiProviderBusy}>Remove workspace key</button> : null}
+                  <button className="button button--primary" disabled={aiProviderBusy}>
+                    {aiProviderBusy ? "Saving…" : aiProviderSettings?.apiKeyConfigured ? "Save AI settings" : "Save provider key"}
+                    <Icon name="arrow" size={15} />
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </form>
+
           <form className="panel settings-card" onSubmit={submitPassword}>
             <div className="settings-card__heading">
               <div className="settings-card__icon settings-card__icon--violet">
@@ -565,6 +681,11 @@ export function SettingsPage({
                 </div>
               ))}
             </div>
+            {settings.membersTruncated ? (
+              <p className="settings-member-list__notice">
+                Showing the first {settings.members.length} of {settings.workspace.memberCount} members to keep this page responsive.
+              </p>
+            ) : null}
             <div className="settings-team-footer">
               <span>
                 {settings.workspace.agentCount} connected agent

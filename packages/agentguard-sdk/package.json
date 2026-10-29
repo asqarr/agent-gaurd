@@ -10,5 +10,8 @@
       "types": "./src/index.d.ts",
       "import": "./src/index.mjs"
     }
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.10.0"
   }
 }

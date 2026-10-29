@@ -167,6 +167,40 @@ test("workspace boundaries reject cross-tenant access and unsafe production scan
     }).catch(() => {});
   });
 
+  await adminPool.query(
+    `INSERT INTO workspace_activity_events
+       (workspace_id, event_type, category, severity, title, explanation)
+     VALUES ($1, 'scan.completed', 'scan', 'success', 'Tenant scoped event', 'Synthetic isolation test event.')`,
+    [ownerWorkspaceId],
+  );
+  const privateActivity = await ownerApi("/api/activity");
+  assert.equal(privateActivity.response.status, 200);
+  assert.ok(privateActivity.body.events.some((event) => event.title === "Tenant scoped event"));
+  const otherWorkspaceActivity = await crossApi("/api/activity");
+  assert.equal(otherWorkspaceActivity.response.status, 200);
+  assert.equal(otherWorkspaceActivity.body.events.length, 0);
+  const unauthenticatedActivity = await jsonRequest("/api/activity");
+  assert.equal(unauthenticatedActivity.response.status, 401);
+  const unauthenticatedActivityStream = await jsonRequest("/api/activity/stream");
+  assert.equal(unauthenticatedActivityStream.response.status, 401);
+
+  const activityStreamSessions = [];
+  cleanupCallbacks.push(async () => {
+    for (const session of activityStreamSessions) session.controller.abort();
+    await Promise.all(activityStreamSessions.map((session) => session.response.body?.cancel().catch(() => {})));
+  });
+  for (let index = 0; index < 3; index += 1) {
+    const controller = new AbortController();
+    const response = await fetch(`${baseUrl}/api/activity/stream`, {
+      headers: { Cookie: ownerCookie },
+      signal: controller.signal,
+    });
+    assert.equal(response.status, 200);
+    activityStreamSessions.push({ controller, response });
+  }
+  const excessActivityStream = await ownerApi("/api/activity/stream");
+  assert.equal(excessActivityStream.response.status, 429);
+
   const crossTenantAgent = await crossApi(`/api/agents/${ownerAgentId}`);
   assert.equal(crossTenantAgent.response.status, 404);
   const crossTenantContract = await crossApi(`/api/agents/${ownerAgentId}/security-contract`);

@@ -30,6 +30,7 @@ import { createIncidentNotification } from "../features/incidents/incident-repos
 import { currentUsagePeriodStart, insertUsageMeasurement } from "../features/billing/usage-repository.mjs";
 import { buildRemediation, buildRemediationSummary } from "../features/reports/remediation.mjs";
 import { SCAN_CATALOG_VERSION } from "../features/scans/scan-verdict.mjs";
+import { appendWorkspaceActivitySafely } from "../features/activity/activity-repository.mjs";
 export { recordUsageMeasurement } from "../features/billing/usage-repository.mjs";
 
 function mapAgent(row) {
@@ -604,59 +605,114 @@ export async function captureUsageStorageSnapshots() {
          pg_total_relation_size('usage_measurements'::regclass)::bigint AS measurements_table_bytes`,
     );
     const size = database.rows[0];
-    const workspaces = await client.query(
-      `SELECT w.id,
-        COALESCE((SELECT SUM(pg_column_size(s))::bigint FROM scans s WHERE s.workspace_id=w.id),0)::bigint AS scans_bytes,
-        COALESCE((SELECT SUM(pg_column_size(sr))::bigint FROM scan_results sr JOIN scans s ON s.id=sr.scan_id WHERE s.workspace_id=w.id),0)::bigint AS scan_results_bytes,
-        COALESCE((SELECT SUM(pg_column_size(sp))::bigint FROM scan_progress sp JOIN scans s ON s.id=sp.scan_id WHERE s.workspace_id=w.id),0)::bigint AS scan_progress_bytes,
-        COALESCE((SELECT SUM(pg_column_size(re))::bigint FROM runtime_events re WHERE re.workspace_id=w.id),0)::bigint AS runtime_events_bytes,
-        COALESCE((SELECT SUM(pg_column_size(um))::bigint FROM usage_measurements um WHERE um.workspace_id=w.id),0)::bigint AS measurements_bytes
-       FROM workspaces w
-       ORDER BY w.id`,
+    const snapshots = await client.query(
+      `WITH scan_usage AS (
+         SELECT workspace_id, SUM(pg_column_size(s))::bigint AS bytes
+         FROM scans s GROUP BY workspace_id
+       ), scan_result_usage AS (
+         SELECT s.workspace_id, SUM(pg_column_size(sr))::bigint AS bytes
+         FROM scan_results sr JOIN scans s ON s.id=sr.scan_id
+         GROUP BY s.workspace_id
+       ), scan_progress_usage AS (
+         SELECT s.workspace_id, SUM(pg_column_size(sp))::bigint AS bytes
+         FROM scan_progress sp JOIN scans s ON s.id=sp.scan_id
+         GROUP BY s.workspace_id
+       ), runtime_usage AS (
+         SELECT workspace_id, SUM(pg_column_size(re))::bigint AS bytes
+         FROM runtime_events re GROUP BY workspace_id
+       ), measurement_usage AS (
+         SELECT workspace_id, SUM(pg_column_size(um))::bigint AS bytes
+         FROM usage_measurements um GROUP BY workspace_id
+       ), workspace_usage AS (
+         SELECT w.id AS workspace_id,
+                COALESCE(s.bytes, 0)::bigint AS scans_bytes,
+                COALESCE(sr.bytes, 0)::bigint AS scan_results_bytes,
+                COALESCE(sp.bytes, 0)::bigint AS scan_progress_bytes,
+                COALESCE(r.bytes, 0)::bigint AS runtime_events_bytes,
+                COALESCE(m.bytes, 0)::bigint AS measurements_bytes
+         FROM workspaces w
+         LEFT JOIN scan_usage s ON s.workspace_id=w.id
+         LEFT JOIN scan_result_usage sr ON sr.workspace_id=w.id
+         LEFT JOIN scan_progress_usage sp ON sp.workspace_id=w.id
+         LEFT JOIN runtime_usage r ON r.workspace_id=w.id
+         LEFT JOIN measurement_usage m ON m.workspace_id=w.id
+       )
+       INSERT INTO usage_storage_snapshots
+         (id, workspace_id, database_size_bytes, logical_bytes, scans_bytes,
+          scan_results_bytes, scan_progress_bytes, runtime_events_bytes, measurements_bytes)
+       SELECT 'storage-' || gen_random_uuid()::text,
+              workspace_id,
+              $1,
+              scans_bytes + scan_results_bytes + scan_progress_bytes + runtime_events_bytes + measurements_bytes,
+              scans_bytes, scan_results_bytes, scan_progress_bytes, runtime_events_bytes, measurements_bytes
+       FROM workspace_usage`,
+      [Number(size.database_size_bytes ?? 0)],
     );
-    for (const row of workspaces.rows) {
-      const logicalBytes = [
-        row.scans_bytes,
-        row.scan_results_bytes,
-        row.scan_progress_bytes,
-        row.runtime_events_bytes,
-        row.measurements_bytes,
-      ].reduce((total, value) => total + Number(value ?? 0), 0);
-      await client.query(
-        `INSERT INTO usage_storage_snapshots
-           (id, workspace_id, database_size_bytes, logical_bytes, scans_bytes,
-            scan_results_bytes, scan_progress_bytes, runtime_events_bytes, measurements_bytes)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [
-          `storage-${randomUUID()}`,
-          row.id,
-          Number(size.database_size_bytes ?? 0),
-          logicalBytes,
-          Number(row.scans_bytes ?? 0),
-          Number(row.scan_results_bytes ?? 0),
-          Number(row.scan_progress_bytes ?? 0),
-          Number(row.runtime_events_bytes ?? 0),
-          Number(row.measurements_bytes ?? 0),
-        ],
-      );
-    }
     await client.query(
       `DELETE FROM usage_storage_snapshots
        WHERE captured_at < NOW() - ($1::double precision * INTERVAL '1 day')`,
       [config.usageCostModel.snapshotRetentionDays],
     );
     return {
-      workspaces: workspaces.rowCount,
+      workspaces: snapshots.rowCount,
       databaseSizeBytes: Number(size.database_size_bytes ?? 0),
     };
   });
 }
 
 export async function getBillingState(workspaceId) {
-  return withTransaction(async (client) => {
-    const state = await lockBillingState(client, workspaceId);
-    state.addonBalances = await getAddonBalances(client, workspaceId);
-    return mapBillingState(state);
+  const result = await query(
+    `SELECT s.*, p.name AS plan_name, p.description AS plan_description,
+            p.billing_interval, p.price_usd_cents, p.max_agents,
+            p.monthly_scan_credits, p.history_days, p.seat_limit,
+            p.runtime_firewall, p.scenario_limit, p.autopilot, p.sentinel,
+            p.incident_center, p.alert_webhooks, p.export_reports,
+            p.max_webhooks, p.runtime_decisions_included, p.scan_credit_mode,
+            p.white_label_reports, p.multi_client_management, p.features,
+            to_jsonb(u) AS current_usage,
+            COALESCE(addons.scan_credits, 0) AS addon_scan_credits,
+            COALESCE(addons.runtime_decisions, 0) AS addon_runtime_decisions,
+            COALESCE(addons.agent_slots, 0) AS addon_agent_slots
+     FROM workspace_subscriptions s
+     JOIN subscription_plans p ON p.id=s.plan_id
+     LEFT JOIN usage_periods u
+       ON u.workspace_id=s.workspace_id AND u.period_start=s.current_period_start
+     LEFT JOIN LATERAL (
+       SELECT
+         SUM(units_remaining) FILTER (WHERE kind='scan_credits') AS scan_credits,
+         SUM(units_remaining) FILTER (WHERE kind='runtime_decisions') AS runtime_decisions,
+         SUM(units_remaining) FILTER (WHERE kind='agent_slot') AS agent_slots
+       FROM billing_addon_purchases
+       WHERE workspace_id=s.workspace_id AND status='active' AND units_remaining > 0
+         AND (expires_at IS NULL OR expires_at > NOW())
+     ) addons ON TRUE
+     WHERE s.workspace_id=$1`,
+    [workspaceId],
+  );
+  const subscription = result.rows[0];
+  if (
+    !subscription ||
+    !subscription.current_usage ||
+    new Date(subscription.current_period_end) <= new Date()
+  ) {
+    return withTransaction(async (client) => {
+      const state = await lockBillingState(client, workspaceId);
+      state.addonBalances = await getAddonBalances(client, workspaceId);
+      return mapBillingState(state);
+    });
+  }
+
+  const periodIsActive = new Date(subscription.current_period_end) > new Date();
+  return mapBillingState({
+    subscription,
+    plan: mapBillingPlan(subscription),
+    usage: subscription.current_usage,
+    active: periodIsActive && ["trialing", "active", "canceled"].includes(subscription.status),
+    addonBalances: {
+      scanCredits: Number(subscription.addon_scan_credits ?? 0),
+      runtimeDecisions: Number(subscription.addon_runtime_decisions ?? 0),
+      agentSlots: Number(subscription.addon_agent_slots ?? 0),
+    },
   });
 }
 
@@ -1930,9 +1986,6 @@ export async function rotateRefreshSession({
        JOIN memberships m ON m.user_id = u.id
        JOIN workspaces w ON w.id = m.workspace_id
        WHERE s.token_hash=$1
-         AND s.revoked_at IS NULL
-         AND s.expires_at > NOW()
-         AND s.session_version = u.session_version
        ORDER BY m.created_at
        LIMIT 1
        FOR UPDATE OF s`,
@@ -1941,11 +1994,35 @@ export async function rotateRefreshSession({
     const session = current.rows[0];
     if (!session) return null;
 
+    if (session.revoked_at) {
+      const graceIsActive = session.rotation_grace_until &&
+        new Date(session.rotation_grace_until) > new Date();
+      if (
+        !graceIsActive ||
+        !session.rotated_to_session_id ||
+        Number(session.session_version) !== Number(session.current_session_version)
+      ) return null;
+      const successor = await client.query(
+        `SELECT 1 FROM auth_refresh_sessions
+         WHERE id=$1 AND user_id=$2 AND session_version=$3
+           AND revoked_at IS NULL AND expires_at > NOW()`,
+        [session.rotated_to_session_id, session.user_id, session.current_session_version],
+      );
+      return successor.rowCount ? session : null;
+    }
+
+    if (
+      new Date(session.expires_at) <= new Date() ||
+      Number(session.session_version) !== Number(session.current_session_version)
+    ) return null;
+
     await client.query(
       `UPDATE auth_refresh_sessions
-       SET revoked_at=NOW(), last_used_at=NOW()
+       SET revoked_at=NOW(), last_used_at=NOW(),
+           rotated_to_session_id=$2,
+           rotation_grace_until=NOW() + INTERVAL '5 seconds'
        WHERE id=$1`,
-      [session.id],
+      [session.id, nextSessionId],
     );
     await client.query(
       `INSERT INTO auth_refresh_sessions
@@ -1985,6 +2062,7 @@ function mapWorkspaceMember(row) {
 }
 
 export async function getWorkspaceSettings({ userId, workspaceId }) {
+  const memberPageSize = 100;
   const [userResult, workspaceResult, membersResult] = await Promise.all([
     query(
       `SELECT u.id, u.email, u.name, u.password_changed_at, u.email_verified_at, u.mfa_enabled,
@@ -2008,9 +2086,9 @@ export async function getWorkspaceSettings({ userId, workspaceId }) {
        FROM memberships m
        JOIN users u ON u.id = m.user_id
        WHERE m.workspace_id = $1
-       ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
-                m.created_at ASC`,
-      [workspaceId],
+       ORDER BY m.created_at ASC, m.user_id ASC
+       LIMIT $2`,
+      [workspaceId, memberPageSize],
     ),
   ]);
 
@@ -2040,6 +2118,7 @@ export async function getWorkspaceSettings({ userId, workspaceId }) {
       agentCount: Number(workspace.agent_count),
     },
     members: membersResult.rows.map(mapWorkspaceMember),
+    membersTruncated: Number(workspace.member_count) > membersResult.rowCount,
     security: {
       passwordChangedAt,
       emailVerified: Boolean(user.email_verified_at),
@@ -2049,6 +2128,63 @@ export async function getWorkspaceSettings({ userId, workspaceId }) {
       sessionStorage: "httpOnly_cookie",
     },
   };
+}
+
+export async function getWorkspaceAIProviderSettings({ workspaceId }) {
+  const result = await query(
+    `SELECT encrypted_api_key, model_id, updated_at
+     FROM workspace_ai_provider_settings
+     WHERE workspace_id=$1`,
+    [workspaceId],
+  );
+  const row = result.rows[0];
+  return row
+    ? {
+        apiKeyConfigured: Boolean(row.encrypted_api_key),
+        model: row.model_id,
+        updatedAt: row.updated_at,
+      }
+    : null;
+}
+
+export async function getWorkspaceAIProviderCredentials({ workspaceId }) {
+  const result = await query(
+    `SELECT encrypted_api_key, model_id
+     FROM workspace_ai_provider_settings
+     WHERE workspace_id=$1 AND encrypted_api_key IS NOT NULL`,
+    [workspaceId],
+  );
+  const row = result.rows[0];
+  return row
+    ? { apiKey: decryptSecret(row.encrypted_api_key), model: row.model_id }
+    : null;
+}
+
+export async function saveWorkspaceAIProviderSettings({ workspaceId, encryptedApiKey, model }) {
+  const result = await query(
+    `INSERT INTO workspace_ai_provider_settings (workspace_id, encrypted_api_key, model_id)
+     VALUES ($1,$2,$3)
+     ON CONFLICT (workspace_id) DO UPDATE SET
+       encrypted_api_key=COALESCE(EXCLUDED.encrypted_api_key, workspace_ai_provider_settings.encrypted_api_key),
+       model_id=EXCLUDED.model_id,
+       updated_at=NOW()
+     RETURNING encrypted_api_key, model_id, updated_at`,
+    [workspaceId, encryptedApiKey ?? null, model],
+  );
+  const row = result.rows[0];
+  return {
+    apiKeyConfigured: Boolean(row.encrypted_api_key),
+    model: row.model_id,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function clearWorkspaceAIProviderSettings({ workspaceId }) {
+  const result = await query(
+    "DELETE FROM workspace_ai_provider_settings WHERE workspace_id=$1 RETURNING workspace_id",
+    [workspaceId],
+  );
+  return Boolean(result.rowCount);
 }
 
 export async function updateUserProfile({ userId, name }) {
@@ -2274,6 +2410,18 @@ export async function listIncidents({ workspaceId, status = "open", limit = 50 }
   return result.rows.map(mapIncident);
 }
 
+export async function getIncident({ workspaceId, incidentId }) {
+  const result = await query(
+    `SELECT n.*, a.name AS agent_name
+     FROM incident_notifications n
+     LEFT JOIN agents a ON a.id=n.agent_id
+     WHERE n.workspace_id=$1 AND n.id=$2
+     LIMIT 1`,
+    [workspaceId, incidentId],
+  );
+  return mapIncident(result.rows[0]);
+}
+
 export async function getIncidentSummary(workspaceId) {
   const [counts, incidents] = await Promise.all([
     query(
@@ -2311,10 +2459,24 @@ export async function resolveIncident({ workspaceId, incidentId }) {
     `UPDATE incident_notifications
      SET status='resolved', resolved_at=COALESCE(resolved_at, NOW()), read_at=COALESCE(read_at, NOW())
      WHERE id=$1 AND workspace_id=$2 AND status='open'
-     RETURNING id`,
+     RETURNING id, agent_id, event_type, severity`,
     [incidentId, workspaceId],
   );
-  return Boolean(result.rowCount);
+  const incident = result.rows[0];
+  if (!incident) return false;
+  const agentResult = incident.agent_id
+    ? await query("SELECT name FROM agents WHERE id=$1 AND workspace_id=$2", [incident.agent_id, workspaceId])
+    : { rows: [] };
+  await appendWorkspaceActivitySafely({
+    workspaceId,
+    agentId: incident.agent_id,
+    agentName: agentResult.rows[0]?.name,
+    eventType: "incident.resolved",
+    resourceType: "incident",
+    resourceId: incident.id,
+    metadata: { incidentType: incident.event_type, incidentSeverity: incident.severity },
+  });
+  return true;
 }
 
 export async function resolveIncidentsForAgent({ workspaceId, agentId, eventType }) {
@@ -2322,9 +2484,23 @@ export async function resolveIncidentsForAgent({ workspaceId, agentId, eventType
     `UPDATE incident_notifications
      SET status='resolved', resolved_at=COALESCE(resolved_at, NOW()), read_at=COALESCE(read_at, NOW())
      WHERE workspace_id=$1 AND agent_id=$2 AND event_type=$3 AND status='open'
-     RETURNING id`,
+     RETURNING id, severity`,
     [workspaceId, agentId, eventType],
   );
+  if (result.rows.length) {
+    const agentResult = await query("SELECT name FROM agents WHERE id=$1 AND workspace_id=$2", [agentId, workspaceId]);
+    for (const incident of result.rows) {
+      await appendWorkspaceActivitySafely({
+        workspaceId,
+        agentId,
+        agentName: agentResult.rows[0]?.name,
+        eventType: "incident.resolved",
+        resourceType: "incident",
+        resourceId: incident.id,
+        metadata: { incidentType: eventType, incidentSeverity: incident.severity },
+      });
+    }
+  }
   return result.rowCount;
 }
 
@@ -2738,6 +2914,23 @@ export async function getSentinelAgentState({ workspaceId, agentId }) {
   };
 }
 
+export async function getSentinelDriftEvent({ workspaceId, eventId }) {
+  const result = await query(
+    `SELECT event.*, agent.name AS agent_name
+     FROM sentinel_drift_events AS event
+     JOIN agents AS agent ON agent.id=event.agent_id AND agent.workspace_id=event.workspace_id
+     WHERE event.workspace_id=$1 AND event.id=$2
+     LIMIT 1`,
+    [workspaceId, eventId],
+  );
+  if (!result.rows[0]) return null;
+  return {
+    ...mapSentinelEvent(result.rows[0]),
+    agentId: result.rows[0].agent_id,
+    agentName: result.rows[0].agent_name,
+  };
+}
+
 export async function getSentinelOverview(workspaceId) {
   const agents = await listAgents(workspaceId);
   const states = await Promise.all(
@@ -2756,11 +2949,21 @@ export async function getSentinelOverview(workspaceId) {
   return { summary, agents: states.filter(Boolean) };
 }
 
-export async function listSentinelTargets() {
+export async function claimSentinelTargets(limit = 200) {
+  const safeLimit = Math.min(1000, Math.max(1, Number(limit) || 200));
   const result = await query(
-    `SELECT id, workspace_id FROM agents
-     WHERE sentinel_enabled=TRUE
-     ORDER BY workspace_id, created_at`,
+    `WITH due_targets AS (
+       SELECT id FROM agents
+       WHERE sentinel_enabled=TRUE
+       ORDER BY sentinel_last_checked_at ASC NULLS FIRST, created_at ASC, id ASC
+       FOR UPDATE SKIP LOCKED
+       LIMIT $1
+     )
+     UPDATE agents a SET sentinel_last_checked_at=NOW()
+     FROM due_targets d
+     WHERE a.id=d.id
+     RETURNING a.id, a.workspace_id`,
+    [safeLimit],
   );
   return result.rows.map((row) => ({ agentId: row.id, workspaceId: row.workspace_id }));
 }
@@ -2972,7 +3175,7 @@ export async function disableRuntimeFirewall({ workspaceId, agentId }) {
 export async function listRuntimeEvents({ workspaceId, agentId, limit = 20 }) {
   const result = await query(
     `SELECT id, request_id, decision, tool_name, reasons, latency_ms,
-            outcome, error_code, failure_stage, created_at
+            outcome, error_code, failure_stage, trace_id, trace_spans, created_at
      FROM runtime_events
      WHERE workspace_id=$1 AND agent_id=$2
      ORDER BY created_at DESC
@@ -2989,8 +3192,37 @@ export async function listRuntimeEvents({ workspaceId, agentId, limit = 20 }) {
     outcome: row.outcome ?? "decision",
     errorCode: row.error_code,
     failureStage: row.failure_stage,
+    traceId: row.trace_id,
+    traceSpans: Array.isArray(row.trace_spans) ? row.trace_spans : [],
     createdAt: row.created_at,
   }));
+}
+
+export async function getRuntimeEvent({ workspaceId, agentId, requestId }) {
+  const result = await query(
+    `SELECT id, request_id, decision, tool_name, reasons, latency_ms,
+            outcome, error_code, failure_stage, trace_id, trace_spans, created_at
+     FROM runtime_events
+     WHERE workspace_id=$1 AND agent_id=$2 AND request_id=$3
+     LIMIT 1`,
+    [workspaceId, agentId, requestId],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    requestId: row.request_id,
+    decision: row.decision,
+    toolName: row.tool_name,
+    reasons: row.reasons ?? [],
+    latencyMs: row.latency_ms,
+    outcome: row.outcome ?? "decision",
+    errorCode: row.error_code,
+    failureStage: row.failure_stage,
+    traceId: row.trace_id,
+    traceSpans: Array.isArray(row.trace_spans) ? row.trace_spans : [],
+    createdAt: row.created_at,
+  };
 }
 
 export async function getRuntimeHealth({ workspaceId, agentId, windowHours }) {
@@ -3051,6 +3283,7 @@ export async function getRuntimeHealth({ workspaceId, agentId, windowHours }) {
 export async function recordRuntimeEvent({
   workspaceId,
   agentId,
+  agentName = null,
   requestId,
   decision,
   toolName,
@@ -3059,13 +3292,15 @@ export async function recordRuntimeEvent({
   outcome = "decision",
   errorCode = null,
   failureStage = null,
+  traceId = null,
+  traceSpans = [],
 }) {
   await withTransaction(async (client) => {
     await client.query(
       `INSERT INTO runtime_events
        (id, workspace_id, agent_id, request_id, decision, tool_name, reasons,
-        latency_ms, outcome, error_code, failure_stage)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        latency_ms, outcome, error_code, failure_stage, trace_id, trace_spans)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)`,
       [
         `runtime-${randomUUID()}`,
         workspaceId,
@@ -3078,6 +3313,8 @@ export async function recordRuntimeEvent({
         outcome,
         errorCode,
         failureStage,
+        traceId,
+        JSON.stringify(Array.isArray(traceSpans) ? traceSpans.slice(0, 64) : []),
       ],
     );
     await client.query(
@@ -3088,15 +3325,42 @@ export async function recordRuntimeEvent({
     );
   });
 
+  const traceIdFromSpans = Array.isArray(traceSpans) ? traceSpans[0]?.traceId : null;
+  const activityType = outcome === "error"
+    ? "runtime.error"
+    : outcome === "quota"
+      ? "runtime.quota_rejected"
+      : decision === "BLOCK"
+        ? "runtime.blocked"
+        : "runtime.allowed";
+  await appendWorkspaceActivitySafely({
+    workspaceId,
+    agentId,
+    agentName,
+    eventType: activityType,
+    resourceType: "runtime_event",
+    resourceId: requestId,
+    metadata: {
+      toolCount: Number.isInteger(traceSpans?.[0]?.toolCount) ? traceSpans[0].toolCount : undefined,
+      stage: failureStage,
+      latencyMs,
+      traceId: traceIdFromSpans,
+    },
+  });
+
   if (outcome === "decision" && decision === "BLOCK") {
-    const agentResult = await query(
-      "SELECT name FROM agents WHERE id=$1 AND workspace_id=$2",
-      [agentId, workspaceId],
-    );
+    let resolvedAgentName = agentName;
+    if (!resolvedAgentName) {
+      const agentResult = await query(
+        "SELECT name FROM agents WHERE id=$1 AND workspace_id=$2",
+        [agentId, workspaceId],
+      );
+      resolvedAgentName = agentResult.rows[0]?.name;
+    }
     await createIncidentNotification({
       workspaceId,
       agentId,
-      agentName: agentResult.rows[0]?.name,
+      agentName: resolvedAgentName,
       eventType: "runtime_block",
       severity: "high",
       message: `${toolName} was blocked by Runtime Firewall. Review the reasons before allowing this action.`,
@@ -3106,6 +3370,19 @@ export async function recordRuntimeEvent({
       metadata: { toolName, reasons: reasons ?? [], latencyMs },
     });
   }
+}
+
+export async function appendRuntimeTraceSpan({ workspaceId, agentId, requestId, traceId, span }) {
+  if (!traceId || !span || span.traceId !== traceId) return false;
+  const result = await query(
+    `UPDATE runtime_events
+     SET trace_spans = trace_spans || $5::jsonb
+     WHERE workspace_id=$1 AND agent_id=$2 AND request_id=$3 AND trace_id=$4
+       AND jsonb_array_length(trace_spans) < 64
+     RETURNING id`,
+    [workspaceId, agentId, requestId, traceId, JSON.stringify([span])],
+  );
+  return Boolean(result.rowCount);
 }
 
 export async function createRuntimeApproval({
@@ -3789,7 +4066,13 @@ export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds =
   let selectedScenarios;
   let contractVersion = 0;
   let policySnapshot;
+  let agentName = null;
   await withTransaction(async (client) => {
+    const agentResult = await client.query(
+      "SELECT name FROM agents WHERE id=$1 AND workspace_id=$2",
+      [agentId, workspaceId],
+    );
+    agentName = agentResult.rows[0]?.name ?? null;
     const billingState = await lockBillingState(client, workspaceId);
     const entitledScenarios = scenariosForPlan(billingState.plan);
     if (Array.isArray(scenarioIds) && scenarioIds.length) {
@@ -3939,6 +4222,14 @@ export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds =
       );
     }
   });
+  await appendWorkspaceActivitySafely({
+    workspaceId,
+    agentId,
+    agentName,
+    eventType: "scan.queued",
+    resourceType: "scan",
+    resourceId: scanId,
+  });
   return {
     id: scanId,
     agentId,
@@ -3988,12 +4279,20 @@ export async function overview(workspaceId) {
   const [metrics, recent] = await Promise.all([
     query(
       `WITH latest_completed AS (
-             SELECT DISTINCT ON (agent_id)
-               agent_id, score, failed, passed, blocked, inconclusive, safety_status,
-               COALESCE(NULLIF(jsonb_array_length(scenario_ids), 0), passed + failed) AS scenario_count
-             FROM scans
-             WHERE workspace_id=$1 AND status='completed'
-             ORDER BY agent_id, created_at DESC
+             SELECT a.id AS agent_id,
+               latest.score, latest.failed, latest.passed, latest.blocked,
+               latest.inconclusive, latest.safety_status,
+               COALESCE(NULLIF(jsonb_array_length(latest.scenario_ids), 0), latest.passed + latest.failed) AS scenario_count
+             FROM agents a
+             JOIN LATERAL (
+               SELECT s.score, s.failed, s.passed, s.blocked, s.inconclusive,
+                      s.safety_status, s.scenario_ids
+               FROM scans s
+               WHERE s.workspace_id=a.workspace_id AND s.agent_id=a.id AND s.status='completed'
+               ORDER BY s.created_at DESC
+               LIMIT 1
+             ) latest ON TRUE
+             WHERE a.workspace_id=$1
            )
            SELECT COALESCE(ROUND(AVG(CASE WHEN safety_status <> 'safe' THEN 0 ELSE score END))::int, 0) AS security_score,
              COALESCE(SUM(failed), 0)::int AS open_findings,

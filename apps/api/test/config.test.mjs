@@ -10,6 +10,11 @@ test("application config passes the Compose hop count to Express as a number", (
   assert.equal(typeof config.trustProxy, "number");
 });
 
+test("database pool sizing and connection wait timeout have safe defaults", () => {
+  assert.equal(config.databasePoolMax, 20);
+  assert.equal(config.databaseConnectionTimeoutMs, 15000);
+});
+
 test("parses TRUST_PROXY numeric values as trusted proxy hop counts", () => {
   assert.equal(parseTrustProxy("0"), 0);
   assert.equal(parseTrustProxy("1"), 1);

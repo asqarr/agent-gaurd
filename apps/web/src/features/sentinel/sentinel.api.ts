@@ -1,5 +1,5 @@
 import { request } from "../../shared/api/client";
-import type { SentinelOverview, SentinelState } from "../../shared/types/api";
+import type { SentinelDriftEvent, SentinelOverview, SentinelState } from "../../shared/types/api";
 
 export async function getSentinelOverview(): Promise<SentinelOverview> {
   return request("/api/sentinel")
@@ -10,6 +10,12 @@ export async function getSentinelState(agentId: string): Promise<SentinelState> 
   return request(`/api/agents/${agentId}/sentinel`)
     .then((response) => response.json())
     .then((body) => body.sentinel);
+}
+
+export async function getSentinelDriftEvent(eventId: string): Promise<SentinelDriftEvent> {
+  return request(`/api/sentinel/events/${encodeURIComponent(eventId)}`)
+    .then((response) => response.json())
+    .then((body) => body.event);
 }
 
 export async function createSentinelBaseline(agentId: string): Promise<SentinelState> {
