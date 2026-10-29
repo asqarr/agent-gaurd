@@ -639,6 +639,27 @@ export type ScanRemediation = {
   retest: { scenarioId: string; label: string; trigger: string };
 };
 
+export type StoredRemediationCopilotGuidance = {
+  guidance: {
+    summary: string;
+    rootCause: string;
+    fixPlan: Array<{
+      title: string;
+      rationale: string;
+      implementation: string;
+      verify: string;
+    }>;
+    acceptanceCriteria: string[];
+    caveats: string[];
+  };
+  model: string;
+  generatedAt: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  promptVersion?: string;
+  schemaVersion?: string;
+};
+
 export type ScanRemediationSummary = {
   total: number;
   open: number;
@@ -703,6 +724,7 @@ export type Scan = {
     reasons: string[];
     call?: ScanToolCall | null;
     remediation?: ScanRemediation | null;
+    copilotGuidance?: StoredRemediationCopilotGuidance;
     source?: string;
   }>;
   attackPaths?: AttackPathResult[];

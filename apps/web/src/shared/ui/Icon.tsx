@@ -12,6 +12,7 @@ export type IconName =
   | "arrow"
   | "chevron"
   | "activity"
+  | "sparkle"
   | "lock"
   | "unlock"
   | "clock"
@@ -32,6 +33,7 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     arrow: "M5 12h14m-6-6 6 6-6 6",
     chevron: "m9 18 6-6-6-6",
     activity: "M3 12h4l2-8 4 16 2-8h6",
+    sparkle: "m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Zm7 11 .9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9L19 14Z",
     lock: "M6 10V8a6 6 0 0 1 12 0v2m-13 0h14v10H5V10Zm7 4v2",
     unlock: "M7 10V8a5 5 0 0 1 9.5-2M5 10h14v10H5V10Zm7 4v2",
     clock: "M12 7v5l3 2m6-2a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z",

@@ -29,6 +29,27 @@ function configuredOrigin() {
   return parsed.origin;
 }
 
+function configuredAIBaseUrl() {
+  const value = (process.env.AI_BASE_URL ?? "https://api.openai.com/v1").trim();
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("AI_BASE_URL must be a valid HTTP(S) endpoint.");
+  }
+  if (
+    !["http:", "https:"].includes(parsed.protocol) ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    (isProduction && parsed.protocol !== "https:")
+  ) {
+    throw new Error("AI_BASE_URL must not include credentials, query, or fragment, and must use HTTPS in production.");
+  }
+  return parsed.toString().replace(/\/$/, "");
+}
+
 function positiveInteger(
   name,
   fallback,
@@ -210,6 +231,20 @@ export const config = Object.freeze({
     max: 3600000,
   }),
   scanRateLimitMax: positiveInteger("SCAN_RATE_LIMIT_MAX", 10, { max: 1000 }),
+  aiCopilotRateLimitWindowMs: positiveInteger("AI_COPILOT_RATE_LIMIT_WINDOW_MS", 60 * 60 * 1000, {
+    min: 1000,
+    max: 24 * 60 * 60 * 1000,
+  }),
+  aiCopilotRateLimitMax: positiveInteger("AI_COPILOT_RATE_LIMIT_MAX", 20, { max: 1000 }),
+  ai: Object.freeze({
+    apiKey: (process.env.AI_API_KEY ?? "").trim(),
+    model: (process.env.AI_MODEL ?? "").trim(),
+    baseUrl: configuredAIBaseUrl(),
+    requestTimeoutMs: positiveInteger("AI_REQUEST_TIMEOUT_MS", 45000, {
+      min: 1000,
+      max: 120000,
+    }),
+  }),
   webhookRateLimitWindowMs: positiveInteger("WEBHOOK_RATE_LIMIT_WINDOW_MS", 60000, {
     min: 1000,
     max: 3600000,

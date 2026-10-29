@@ -3736,6 +3736,28 @@ export async function getScan(scanId, workspaceId) {
     };
     return { ...result, remediation: buildRemediation({ result, policy: workspacePolicy }) };
   });
+  const copilotGuidance = await query(
+    `SELECT scenario_id, guidance, model_id, created_at, input_tokens, output_tokens,
+            prompt_version, schema_version
+     FROM scan_copilot_guidance
+     WHERE scan_id=$1 AND workspace_id=$2`,
+    [scanId, workspaceId],
+  );
+  const copilotByScenario = new Map(copilotGuidance.rows.map((row) => [row.scenario_id, {
+    guidance: row.guidance,
+    model: row.model_id,
+    generatedAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+    inputTokens: row.input_tokens == null ? null : Number(row.input_tokens),
+    outputTokens: row.output_tokens == null ? null : Number(row.output_tokens),
+    promptVersion: row.prompt_version,
+    schemaVersion: row.schema_version,
+  }]));
+  scan.results = scan.results.map((item) => ({
+    ...item,
+    ...(copilotByScenario.has(item.scenarioId)
+      ? { copilotGuidance: copilotByScenario.get(item.scenarioId) }
+      : {}),
+  }));
   scan.remediationSummary = buildRemediationSummary(scan.results, workspacePolicy);
   scan.attackPaths = evaluateAttackPaths(scan.results);
   const progress = await query(

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../../shared/ui/Icon";
-import type { AttackPathResult, Scan, ScanProgress, ScanRemediation, SecurityDemoProof } from "../../shared/types/api";
+import { RemediationCopilot } from "./RemediationCopilot";
+import type { AttackPathResult, Scan, ScanProgress, ScanRemediation, SecurityDemoProof, StoredRemediationCopilotGuidance } from "../../shared/types/api";
 
 type ScanResult = NonNullable<Scan["results"]>[number];
 
@@ -145,9 +146,19 @@ function formatDuration(durationMs: number | null) {
 function RemediationCard({
   remediation,
   onRetest,
+  scanId,
+  verdict,
+  policyVersion,
+  canGenerateAi,
+  storedGuidance,
 }: {
   remediation: ScanRemediation;
   onRetest?: (scenarioId: string) => void;
+  scanId: string;
+  verdict?: string | null;
+  policyVersion?: number;
+  canGenerateAi: boolean;
+  storedGuidance?: StoredRemediationCopilotGuidance;
 }) {
   const isProtected = remediation.status === "protected";
   return (
@@ -165,7 +176,7 @@ function RemediationCard({
         {remediation.recommendations.map((item) => <article key={item.id}><div><b>{item.priority} · {item.title}</b><span>{item.action}</span></div><small><strong>Implementation:</strong> {item.implementation}<br /><strong>Verify:</strong> {item.verify}</small></article>)}
       </div>
       <div className="scan-remediation__acceptance"><span>Acceptance criteria</span><ul>{remediation.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul></div>
-      {onRetest ? <button type="button" className="button button--subtle scan-remediation__retest" onClick={() => onRetest(remediation.retest.scenarioId)}><Icon name="activity" size={14} />{remediation.retest.label}</button> : null}
+      {remediation.status !== "protected" && canGenerateAi ? <RemediationCopilot scanId={scanId} scenarioId={remediation.scenarioId} verdict={verdict} policyVersion={policyVersion} storedGuidance={storedGuidance} onRetest={onRetest} /> : onRetest ? <button type="button" className="button button--subtle scan-remediation__retest" onClick={() => onRetest(remediation.retest.scenarioId)}><Icon name="activity" size={14} />{remediation.retest.label}</button> : null}
     </div>
   );
 }
@@ -378,7 +389,7 @@ export function ScanEvidencePanel({
                   <pre>{JSON.stringify(result.call.arguments, null, 2)}</pre>
                 </div>
               ) : null}
-              {result.remediation ? <RemediationCard remediation={result.remediation} onRetest={onRetest} /> : null}
+              {result.remediation ? <RemediationCard remediation={result.remediation} onRetest={onRetest} scanId={scan.id} verdict={result.verdict} policyVersion={scan.policyVersion} canGenerateAi={scan.status === "completed"} storedGuidance={result.copilotGuidance} /> : null}
             </article>
           ))}
         </div>

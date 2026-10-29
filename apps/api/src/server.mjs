@@ -264,6 +264,12 @@ const scanRateLimit = createConfiguredRateLimiter({
   keyFn: (req) => `${req.auth?.workspaceId ?? req.ip}`,
   message: "Too many scan requests. Try again later.",
 });
+const copilotRateLimit = createConfiguredRateLimiter({
+  windowMs: config.aiCopilotRateLimitWindowMs,
+  max: config.aiCopilotRateLimitMax,
+  keyFn: (req) => req.auth?.workspaceId ?? req.ip,
+  message: "AI remediation limit reached for this workspace. Try again later.",
+});
 const attackLabRateLimit = createConfiguredRateLimiter({
   windowMs: 10 * 60 * 1000,
   max: 30,
@@ -1307,7 +1313,7 @@ function canManageAgents(role) {
 
 // Scan HTTP concerns live in the scan feature. The server only composes
 // authenticated feature routers and supplies cross-cutting dependencies.
-app.use("/api", createScanRouter({ scanRateLimit, recordAudit }));
+app.use("/api", createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit }));
 
 app.get("/api/agents/:agentId/security-contract", async (req, res, next) => {
   try {

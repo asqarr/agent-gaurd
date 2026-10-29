@@ -1,10 +1,23 @@
 import express from "express";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { toTextStream } from "ai";
 import * as repository from "../../infrastructure/repository.mjs";
+import { config } from "../../core/config.mjs";
+import * as copilotRepository from "../copilot/repository.mjs";
+import {
+  buildRemediationCopilotEvidence,
+  createRemediationCopilotStream,
+  isRemediationCopilotConfigured,
+  remediationCopilotSchema,
+  REMEDIATION_COPILOT_PROMPT_VERSION,
+  REMEDIATION_COPILOT_SCHEMA_VERSION,
+} from "../copilot/remediation-copilot.mjs";
 import { attackPaths, policy, scenarios } from "../catalog/domain.mjs";
 import { renderScanReport } from "../reports/report.mjs";
 import { planLimitResponse, requireEntitlement } from "../billing/entitlement-service.mjs";
 
-export function createScanRouter({ scanRateLimit, recordAudit }) {
+export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit }) {
   const router = express.Router();
   router.get("/attack-paths", async (req, res, next) => {
     try {
@@ -124,6 +137,119 @@ export function createScanRouter({ scanRateLimit, recordAudit }) {
       });
     } catch (error) {
       next(error);
+    }
+  });
+
+  router.post("/scans/:scanId/copilot/:scenarioId", copilotRateLimit, async (req, res, next) => {
+    try {
+      const scan = await repository.getScan(req.params.scanId, req.auth.workspaceId);
+      if (!scan) return res.status(404).json({ error: "Scan not found." });
+      if (scan.status !== "completed") {
+        return res.status(409).json({ error: "AI remediation is available after the scan completes.", code: "SCAN_NOT_COMPLETE" });
+      }
+
+      const result = scan.results?.find((item) => item.scenarioId === req.params.scenarioId);
+      if (!result) return res.status(404).json({ error: "Scenario evidence not found in this scan." });
+      if (!result.remediation || result.remediation.status === "protected") {
+        return res.status(409).json({ error: "AI remediation is only available for findings that need review.", code: "COPILOT_NOT_APPLICABLE" });
+      }
+
+      const cached = await copilotRepository.getScanCopilotGuidance({
+        scanId: scan.id,
+        workspaceId: req.auth.workspaceId,
+        scenarioId: result.scenarioId,
+      });
+      if (
+        cached?.promptVersion === REMEDIATION_COPILOT_PROMPT_VERSION &&
+        cached?.schemaVersion === REMEDIATION_COPILOT_SCHEMA_VERSION
+      ) {
+        const parsed = remediationCopilotSchema.safeParse(cached.guidance);
+        if (parsed.success) {
+          res.status(200);
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.setHeader("Cache-Control", "no-store");
+          return res.end(JSON.stringify(parsed.data));
+        }
+      }
+
+      if (!isRemediationCopilotConfigured()) {
+        return res.status(503).json({
+          error: "AI Remediation Copilot is not configured. Set AI_API_KEY and AI_MODEL on the API service.",
+          code: "COPILOT_NOT_CONFIGURED",
+        });
+      }
+
+      const abortController = new AbortController();
+      res.once("close", () => {
+        if (!res.writableEnded) abortController.abort(new Error("Client disconnected."));
+      });
+      const evidence = buildRemediationCopilotEvidence({ scan, result });
+      const generation = createRemediationCopilotStream({
+        evidence,
+        abortSignal: abortController.signal,
+        onError: ({ error }) => console.error(JSON.stringify({
+          level: "error",
+          event: "scan_copilot_generation_failed",
+          requestId: req.requestId,
+          scanId: scan.id,
+          scenarioId: result.scenarioId,
+          model: config.ai.model,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+          statusCode: Number.isInteger(error?.statusCode) ? error.statusCode : undefined,
+        })),
+      });
+
+      res.status(200);
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("X-Accel-Buffering", "no");
+
+      async function* guidanceStream() {
+        for await (const chunk of toTextStream({ stream: generation.stream })) yield chunk;
+        const guidance = remediationCopilotSchema.parse(await generation.output);
+        const usage = await generation.totalUsage;
+        await copilotRepository.saveScanCopilotGuidance({
+          scanId: scan.id,
+          workspaceId: req.auth.workspaceId,
+          scenarioId: result.scenarioId,
+          createdBy: req.auth.userId,
+          model: config.ai.model,
+          promptVersion: REMEDIATION_COPILOT_PROMPT_VERSION,
+          schemaVersion: REMEDIATION_COPILOT_SCHEMA_VERSION,
+          guidance,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+        });
+        await recordAudit(req, {
+          action: "scan.copilot.generated",
+          resourceType: "scan",
+          resourceId: scan.id,
+          metadata: {
+            scenarioId: result.scenarioId,
+            model: config.ai.model,
+            promptVersion: REMEDIATION_COPILOT_PROMPT_VERSION,
+            schemaVersion: REMEDIATION_COPILOT_SCHEMA_VERSION,
+            inputTokens: usage.inputTokens ?? null,
+            outputTokens: usage.outputTokens ?? null,
+          },
+        });
+      }
+
+      await pipeline(Readable.from(guidanceStream()), res);
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "scan_copilot_request_failed",
+        requestId: req.requestId,
+        scanId: req.params.scanId,
+        scenarioId: req.params.scenarioId,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      }));
+      if (!res.headersSent && !res.destroyed) {
+        return res.status(502).json({ error: "AI remediation could not be generated. Please retry.", code: "COPILOT_GENERATION_FAILED" });
+      }
+      if (!res.destroyed) res.destroy();
     }
   });
 

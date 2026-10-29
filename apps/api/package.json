@@ -17,9 +17,12 @@
   },
   "dependencies": {
     "@agentguard/sdk": "*",
+    "@ai-sdk/openai": "^4.0.104",
+    "ai": "^7.0.156",
     "bcryptjs": "^3.0.2",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.2",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "zod": "^4.6.7"
   }
 }
