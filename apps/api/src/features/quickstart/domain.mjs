@@ -35,6 +35,7 @@ export function buildSecurityProof({ policy, now = new Date() }) {
   const demoPolicy = {
     name: "Quickstart refund policy",
     maxAmount: 50,
+    maxAgeDays: 14,
     currency: "USD",
   };
   const requestId = `demo-proof-${randomUUID()}`;

@@ -267,6 +267,7 @@ test("runtime gateway binds approvals, blocks unsafe refunds, and rejects replay
   const token = enabled.body.token;
   const runtimeHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
   const executionContext = { actorId: "customer-1", tenantId: "merchant-1", orderId: "TEST-001", issuedAt: new Date().toISOString() };
+  const trustedContext = { orders: { "TEST-001": { ageDays: 5 } } };
 
   const upstreamCallsBeforeVerification = upstreamCalls;
   const verificationResponse = await api(`/api/agents/${agentId}/runtime/verification`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
@@ -299,13 +300,24 @@ test("runtime gateway binds approvals, blocks unsafe refunds, and rejects replay
   const invoke = await fetch(`${baseUrl}/api/runtime/agents/${agentId}/invoke`, {
     method: "POST",
     headers: runtimeHeaders,
-    body: JSON.stringify({ input: "safe refund", executionContext }),
+    body: JSON.stringify({ input: "safe refund", executionContext, trustedContext }),
   });
   const invokeBody = await readJson(invoke);
   assert.equal(invoke.status, 200);
   assert.equal(invokeBody.guard.decision, "ALLOW");
   assert.equal(invokeBody.approved_tool_calls.length, 1);
   const approval = invokeBody.approved_tool_calls[0];
+
+  const missingTrustedOrders = await fetch(`${baseUrl}/api/runtime/agents/${agentId}/invoke`, {
+    method: "POST",
+    headers: runtimeHeaders,
+    body: JSON.stringify({ input: "safe refund", executionContext }),
+  });
+  const missingTrustedOrdersBody = await readJson(missingTrustedOrders);
+  assert.equal(missingTrustedOrders.status, 200);
+  assert.equal(missingTrustedOrdersBody.guard.decision, "BLOCK");
+  assert.deepEqual(missingTrustedOrdersBody.approved_tool_calls, []);
+  assert.ok(missingTrustedOrdersBody.guard.reasons.some((reason) => reason.includes("trusted records")));
 
   const tampered = await fetch(`${baseUrl}/api/runtime/agents/${agentId}/approvals/${approval.approval.id}/consume`, {
     method: "POST",
@@ -340,7 +352,7 @@ test("runtime gateway binds approvals, blocks unsafe refunds, and rejects replay
   const unsafe = await fetch(`${baseUrl}/api/runtime/agents/${agentId}/invoke`, {
     method: "POST",
     headers: runtimeHeaders,
-    body: JSON.stringify({ input: "unsafe refund", executionContext }),
+    body: JSON.stringify({ input: "unsafe refund", executionContext, trustedContext }),
   });
   const unsafeBody = await readJson(unsafe);
   assert.equal(unsafe.status, 200);
@@ -353,7 +365,7 @@ test("runtime gateway binds approvals, blocks unsafe refunds, and rejects replay
     const failedInvoke = await fetch(`${baseUrl}/api/runtime/agents/${agentId}/invoke`, {
       method: "POST",
       headers: runtimeHeaders,
-      body: JSON.stringify({ input, executionContext }),
+      body: JSON.stringify({ input, executionContext, trustedContext }),
     });
     assert.equal(failedInvoke.status, 500, `${input} should fail closed instead of returning an approval`);
     const failedBody = await readJson(failedInvoke);
@@ -363,10 +375,10 @@ test("runtime gateway binds approvals, blocks unsafe refunds, and rejects replay
   const healthResponse = await api(`/api/agents/${agentId}/runtime/health?window=24h`);
   assert.equal(healthResponse.response.status, 200);
   assert.equal(healthResponse.body.health.observationStatus, "degraded");
-  assert.equal(healthResponse.body.health.sampleCount, 4);
-  assert.equal(healthResponse.body.health.decisionCount, 2);
+  assert.equal(healthResponse.body.health.sampleCount, 5);
+  assert.equal(healthResponse.body.health.decisionCount, 3);
   assert.equal(healthResponse.body.health.allowCount, 1);
-  assert.equal(healthResponse.body.health.blockCount, 1);
+  assert.equal(healthResponse.body.health.blockCount, 2);
   assert.equal(healthResponse.body.health.errorCount, 2);
   assert.equal(healthResponse.body.health.quotaRejectedCount, 0);
   assert.ok(healthResponse.body.health.p50Ms <= healthResponse.body.health.p95Ms);

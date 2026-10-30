@@ -819,7 +819,9 @@ app.post("/api/runtime/agents/:agentId/invoke", runtimeRateLimit, async (req, re
           maxAmount: Math.min(Number(workspacePolicy.maxAmount), Number(contract?.maxRefundAmount ?? workspacePolicy.maxAmount)),
           maxAgeDays: Math.min(Number(workspacePolicy.maxAgeDays), Number(contract?.maxOrderAgeDays ?? workspacePolicy.maxAgeDays)),
         },
-        orders: trustedOrders,
+        // Runtime decisions must use caller-supplied trusted order records.
+        // Never fall back to the guard's synthetic TEST-* fixtures here.
+        orders: trustedOrders ?? Object.create(null),
       });
       const guard = finalizeRuntimeCalls(
         upstream.executionSafety === "unsafe"

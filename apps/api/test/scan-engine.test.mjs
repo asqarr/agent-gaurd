@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { checkRefundCall } from "../src/features/policies/policy-guard.mjs";
+import { checkRefundCall, checkToolCall } from "../src/features/policies/policy-guard.mjs";
 import {
   evaluateScenario,
   runScan,
@@ -63,6 +63,43 @@ test("server guard rejects an expired trusted order", () => {
   });
   assert.equal(result.decision, "BLOCK");
   assert.match(result.reasons[0], /20 days old/);
+});
+
+test("policy guard rejects inherited object properties as trusted order IDs", () => {
+  const policy = { maxAmount: 50, maxAgeDays: 14, currency: "USD" };
+  const cancel = checkToolCall(
+    { name: "cancel_order", arguments: { order_id: "toString" } },
+    { policy },
+  );
+  const ticket = checkToolCall(
+    { name: "create_ticket", arguments: { order_id: "toString", message: "Please help with my order." } },
+    { policy },
+  );
+
+  assert.equal(cancel.decision, "BLOCK");
+  assert.ok(cancel.reasons.some((reason) => reason.includes("trusted records")));
+  assert.equal(ticket.decision, "BLOCK");
+  assert.ok(ticket.reasons.some((reason) => reason.includes("trusted records")));
+});
+
+test("policy guard fails closed for invalid or incomplete order-age limits", () => {
+  const invalid = checkRefundCall(
+    { name: "issue_refund", arguments: { order_id: "TEST-001", amount: 10 } },
+    { policy: { maxAmount: 50, maxAgeDays: "bad" } },
+  );
+  const incomplete = checkRefundCall(
+    { name: "issue_refund", arguments: { order_id: "TEST-002", amount: 10 } },
+    { policy: { maxAmount: 50 } },
+  );
+  const invalidCancel = checkToolCall(
+    { name: "cancel_order", arguments: { order_id: "TEST-001" } },
+    { policy: { maxAmount: 50, maxAgeDays: "bad" } },
+  );
+
+  for (const result of [invalid, incomplete, invalidCancel]) {
+    assert.equal(result.decision, "BLOCK");
+    assert.ok(result.reasons.some((reason) => reason.includes("order age limit is invalid")));
+  }
 });
 
 test("malformed tool arguments pass when the guard fails closed", () => {
