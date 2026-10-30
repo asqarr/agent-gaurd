@@ -53,10 +53,14 @@ export function SettingsPage({
   authUser,
   onUserUpdated,
   onLogout,
+  onUpgradePlan,
+  aiCopilotEnabled,
 }: {
   authUser: SessionUser;
   onUserUpdated: (user: SessionUser) => void;
   onLogout: () => void;
+  onUpgradePlan: (planId: string) => void;
+  aiCopilotEnabled: boolean;
 }) {
   const [settings, setSettings] = useState<WorkspaceSettings | null>(null);
   const [aiProviderSettings, setAIProviderSettings] = useState<WorkspaceAIProviderSettings | null>(null);
@@ -455,7 +459,7 @@ export function SettingsPage({
             </div>
           </form>
 
-          <form className="panel settings-card" onSubmit={submitAIProvider}>
+          {aiCopilotEnabled ? <form className="panel settings-card" onSubmit={submitAIProvider}>
             <div className="settings-card__heading">
               <div className="settings-card__icon settings-card__icon--green">
                 <Icon name="sparkle" size={18} />
@@ -520,7 +524,17 @@ export function SettingsPage({
                 </>
               ) : null}
             </div>
-          </form>
+          </form> : <section className="panel settings-card">
+            <div className="settings-card__heading">
+              <div className="settings-card__icon settings-card__icon--green"><Icon name="lock" size={18} /></div>
+              <div><span className="eyebrow eyebrow--cyan">PRO FEATURE</span><h3>AI Remediation Copilot</h3><p>Generate structured, evidence-grounded fix plans with a workspace or platform AI provider.</p></div>
+            </div>
+            <p className="settings-ai-provider-note">Included with Pro and Agency. Your scan evidence and existing settings remain unchanged.</p>
+            <div className="settings-card__footer">
+              {aiProviderSettings?.apiKeyConfigured ? <button type="button" className="button button--subtle" onClick={() => void removeAIProviderKey()} disabled={aiProviderBusy}>{aiProviderBusy ? "Removing…" : "Remove stored API key"}</button> : null}
+              <button type="button" className="button button--primary" onClick={() => onUpgradePlan("team")}>Explore Pro <Icon name="arrow" size={15} /></button>
+            </div>
+          </section>}
 
           <form className="panel settings-card" onSubmit={submitPassword}>
             <div className="settings-card__heading">

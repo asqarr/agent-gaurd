@@ -1168,6 +1168,33 @@ function closeWorkspaceActivityStreams() {
   activityStreamResponses.clear();
 }
 
+function effectiveEvidenceHistoryDays(billing) {
+  return billing.entitlements.active ? Math.max(1, Number(billing.entitlements.historyDays) || 7) : 7;
+}
+
+function activityScopeForBilling(billing) {
+  const eventTypes = [
+    "scan.queued",
+    "scan.started",
+    "scan.progress",
+    "scan.completed",
+    "scan.retry_scheduled",
+    "scan.failed",
+    "runtime.allowed",
+    "runtime.blocked",
+    "runtime.error",
+    "runtime.quota_rejected",
+    "runtime.approval_consumed",
+  ];
+  if (billing.entitlements.incidentCenter) eventTypes.push("incident.opened", "incident.resolved", "agent.quarantined");
+  if (billing.entitlements.sentinel) eventTypes.push("sentinel.drift_detected");
+  if (billing.entitlements.aiRemediationCopilot) eventTypes.push("copilot.generated");
+  return {
+    eventTypes,
+    historyDays: effectiveEvidenceHistoryDays(billing),
+  };
+}
+
 app.get("/api/activity", async (req, res, next) => {
   try {
     const limitValue = Number(req.query.limit ?? 50);
@@ -1178,10 +1205,13 @@ app.get("/api/activity", async (req, res, next) => {
     if (req.query.beforeId !== undefined && !beforeId) {
       return res.status(400).json({ error: "Activity cursor is invalid." });
     }
+    const billing = await repository.getBillingState(req.auth.workspaceId);
+    const activityScope = activityScopeForBilling(billing);
     const events = await listWorkspaceActivity({
       workspaceId: req.auth.workspaceId,
       beforeId,
       limit: limitValue + 1,
+      ...activityScope,
     });
     const hasMore = events.length > limitValue;
     res.setHeader("Cache-Control", "no-store");
@@ -1217,6 +1247,7 @@ app.get("/api/activity/stream", async (req, res, next) => {
   let replayRetryTimer;
   let replayRetryDelayMs = 1000;
   let closed = false;
+  let activityScope;
 
   const sendActivity = (event, isInitialHistory = false) => {
     if (!event?.id || BigInt(event.id) <= BigInt(cursor)) return;
@@ -1240,8 +1271,9 @@ app.get("/api/activity/stream", async (req, res, next) => {
     try {
       do {
         replayRequested = false;
+        activityScope = activityScopeForBilling(await repository.getBillingState(req.auth.workspaceId));
         if (!initialized) {
-          const recent = await listWorkspaceActivity({ workspaceId: req.auth.workspaceId, limit: 50 });
+          const recent = await listWorkspaceActivity({ workspaceId: req.auth.workspaceId, limit: 50, ...activityScope });
           for (const event of recent.reverse()) sendActivity(event, true);
           initialized = true;
           continue;
@@ -1256,6 +1288,7 @@ app.get("/api/activity/stream", async (req, res, next) => {
             workspaceId: req.auth.workspaceId,
             afterId: cursor,
             limit: 500,
+            ...activityScope,
           });
           for (const event of rows) sendActivity(event);
         } while (!closed && rows.length === 500);
@@ -1309,6 +1342,7 @@ app.get("/api/activity/stream", async (req, res, next) => {
   };
 
   try {
+    activityScope = activityScopeForBilling(await repository.getBillingState(req.auth.workspaceId));
     unsubscribe = await subscribeWorkspaceActivity(req.auth.workspaceId, onActivity);
     if (closed || res.destroyed) {
       unsubscribe();
@@ -1317,7 +1351,7 @@ app.get("/api/activity/stream", async (req, res, next) => {
     }
     res.status(200);
     res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Cache-Control", "no-cache, no-store, no-transform");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
@@ -1410,6 +1444,8 @@ app.patch("/api/settings/ai-provider", async (req, res, next) => {
     if (body.clearApiKey && apiKey) {
       return res.status(400).json({ error: "Choose either a replacement API key or clear the existing key." });
     }
+
+    if (!body.clearApiKey && !(await requireEntitlement(req, res, "aiRemediationCopilot", "Workspace AI Remediation settings require Pro or Agency."))) return;
 
     if (body.clearApiKey) {
       await repository.clearWorkspaceAIProviderSettings({ workspaceId: req.auth.workspaceId });
@@ -1753,6 +1789,7 @@ app.use("/api", createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
 
 app.get("/api/agents/:agentId/security-contract", async (req, res, next) => {
   try {
+    if (!(await requireEntitlement(req, res, "securityContracts", "Versioned Security Contracts require Builder or a higher plan."))) return;
     const agent = await repository.getAgent(req.params.agentId, req.auth.workspaceId);
     if (!agent) return res.status(404).json({ error: "Agent not found." });
     const contract = await repository.getSecurityContract({
@@ -1771,6 +1808,7 @@ app.get("/api/agents/:agentId/security-contract", async (req, res, next) => {
 
 app.get("/api/agents/:agentId/security-contract/comparison", async (req, res, next) => {
   try {
+    if (!(await requireEntitlement(req, res, "securityContracts", "Security Contract regression comparisons require Builder or a higher plan."))) return;
     const comparison = await repository.getSecurityContractComparison({
       workspaceId: req.auth.workspaceId,
       agentId: req.params.agentId,
@@ -1787,6 +1825,7 @@ app.patch("/api/agents/:agentId/security-contract", async (req, res, next) => {
     if (!canManageAgents(req.auth.role)) {
       return res.status(403).json({ error: "Only workspace owners and admins can update security contracts." });
     }
+    if (!(await requireEntitlement(req, res, "securityContracts", "Versioned Security Contracts require Builder or a higher plan."))) return;
     const contract = await repository.updateSecurityContract({
       workspaceId: req.auth.workspaceId,
       agentId: req.params.agentId,
@@ -1827,6 +1866,7 @@ app.get("/api/audit", async (req, res, next) => {
     if (!canManageAgents(req.auth.role)) {
       return res.status(403).json({ error: "Only workspace owners and admins can view audit events." });
     }
+    if (!(await requireEntitlement(req, res, "incidentCenter", "Workspace audit history requires Builder or a higher plan."))) return;
     res.json({ events: await repository.listAuditEvents({
       workspaceId: req.auth.workspaceId,
       limit: req.query.limit,
@@ -1918,7 +1958,7 @@ app.post("/api/incidents/:incidentId/resolve", async (req, res, next) => {
 
 app.get("/api/alert-webhooks", async (req, res, next) => {
   try {
-    if (!(await requireEntitlement(req, res, "alertWebhooks", "Signed alert webhooks require Pro or Agency."))) return;
+    // Existing destinations remain visible so an owner can clean them up after a downgrade.
     res.json({ webhooks: await repository.listAlertWebhooks(req.auth.workspaceId) });
   } catch (error) {
     next(error);
@@ -2044,7 +2084,7 @@ app.post("/api/alert-webhooks/:webhookId/test", webhookRateLimit, async (req, re
 
 app.delete("/api/alert-webhooks/:webhookId", async (req, res, next) => {
   try {
-    if (!(await requireEntitlement(req, res, "alertWebhooks", "Signed alert webhooks require Pro or Agency."))) return;
+    // Deletion is always allowed so a downgraded workspace can remove a stored destination.
     if (!canManageAgents(req.auth.role)) {
       return res.status(403).json({ error: "Only workspace owners and admins can delete alert webhooks." });
     }
@@ -2105,7 +2145,7 @@ app.post("/api/sentinel/check", async (req, res, next) => {
     if (!canManageAgents(req.auth.role)) {
       return res.status(403).json({ error: "Only workspace owners and admins can run Sentinel checks." });
     }
-    const agents = await repository.listAgents(req.auth.workspaceId);
+    const agents = (await repository.listAgents(req.auth.workspaceId)).filter((agent) => agent.mode !== "demo_simulator");
     await Promise.all(
       agents.map((agent) => repository.checkSentinel({
         workspaceId: req.auth.workspaceId,
@@ -2211,7 +2251,7 @@ function validateAgentText(value, label) {
 
 app.post("/api/agents/:agentId/runtime/enable", async (req, res, next) => {
   try {
-    if (!(await requireEntitlement(req, res, "runtimeFirewall", "Runtime Firewall requires Builder or a higher plan."))) return;
+    if (!(await requireEntitlement(req, res, "runtimeFirewall", "Runtime Firewall is included with 100 monthly decisions on Explorer."))) return;
     if (!canManageAgents(req.auth.role)) return res.status(403).json({ error: "Only workspace owners and admins can enable Runtime Firewall." });
     const agent = await repository.getAgent(req.params.agentId, req.auth.workspaceId);
     if (!agent) return res.status(404).json({ error: "Agent not found." });
@@ -2255,7 +2295,13 @@ app.get("/api/agents/:agentId/runtime/events", async (req, res, next) => {
   try {
     const agent = await repository.getAgent(req.params.agentId, req.auth.workspaceId);
     if (!agent) return res.status(404).json({ error: "Agent not found." });
-    res.json({ events: await repository.listRuntimeEvents({ workspaceId: req.auth.workspaceId, agentId: agent.id }) });
+    const billing = await repository.getBillingState(req.auth.workspaceId);
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ events: await repository.listRuntimeEvents({
+      workspaceId: req.auth.workspaceId,
+      agentId: agent.id,
+      historyDays: effectiveEvidenceHistoryDays(billing),
+    }) });
   } catch (error) { next(error); }
 });
 
@@ -2263,10 +2309,12 @@ app.get("/api/agents/:agentId/runtime/events/:requestId", async (req, res, next)
   try {
     const agent = await repository.getAgent(req.params.agentId, req.auth.workspaceId);
     if (!agent) return res.status(404).json({ error: "Agent not found." });
+    const billing = await repository.getBillingState(req.auth.workspaceId);
     const event = await repository.getRuntimeEvent({
       workspaceId: req.auth.workspaceId,
       agentId: agent.id,
       requestId: req.params.requestId,
+      historyDays: effectiveEvidenceHistoryDays(billing),
     });
     if (!event) return res.status(404).json({ error: "Runtime event not found." });
     res.setHeader("Cache-Control", "no-store");
@@ -2278,7 +2326,7 @@ app.get("/api/agents/:agentId/runtime/health", async (req, res, next) => {
   try {
     const agent = await repository.getAgent(req.params.agentId, req.auth.workspaceId);
     if (!agent) return res.status(404).json({ error: "Agent not found." });
-    if (!(await requireEntitlement(req, res, "runtimeFirewall", "Runtime health metrics require Builder or a higher plan."))) return;
+    if (!(await requireEntitlement(req, res, "runtimeFirewall", "Runtime health metrics require an active Runtime Firewall allowance."))) return;
     const requestedWindow = req.query.window ?? "24h";
     if (requestedWindow !== "24h" && requestedWindow !== "7d") {
       return res.status(400).json({ error: "window must be 24h or 7d." });
@@ -2351,13 +2399,18 @@ async function runRuntimeApprovalRaceProbe({ workspaceId, agentId, verificationI
 
 app.get("/api/agents/:agentId/runtime/verification", async (req, res, next) => {
   try {
-    if (!(await requireEntitlement(req, res, "runtimeFirewall", "Enforcement verification requires Builder or a higher plan."))) return;
+    const billing = await requireEntitlement(req, res, "enforcementVerification", "Enforcement Verification requires Builder or a higher plan.");
+    if (!billing) return;
     const agent = await repository.getAgent(req.params.agentId, req.auth.workspaceId);
     if (!agent) return res.status(404).json({ error: "Agent not found." });
     const [policyState, contract, latest] = await Promise.all([
       repository.getPolicy(req.auth.workspaceId),
       repository.getSecurityContract({ workspaceId: req.auth.workspaceId, agentId: agent.id }),
-      repository.getRuntimeVerification({ workspaceId: req.auth.workspaceId, agentId: agent.id }),
+      repository.getRuntimeVerification({
+        workspaceId: req.auth.workspaceId,
+        agentId: agent.id,
+        historyDays: effectiveEvidenceHistoryDays(billing),
+      }),
     ]);
     const currentFingerprint = enforcementVerificationFingerprint({
       agent: { ...agent, workspaceId: req.auth.workspaceId },
@@ -2377,7 +2430,8 @@ app.get("/api/agents/:agentId/runtime/verification", async (req, res, next) => {
 
 app.post("/api/agents/:agentId/runtime/verification", scanRateLimit, async (req, res, next) => {
   try {
-    if (!(await requireEntitlement(req, res, "runtimeFirewall", "Enforcement verification requires Builder or a higher plan."))) return;
+    const billing = await requireEntitlement(req, res, "enforcementVerification", "Enforcement Verification requires Builder or a higher plan.");
+    if (!billing) return;
     if (!canManageAgents(req.auth.role)) {
       return res.status(403).json({ error: "Only workspace owners and admins can run enforcement verification." });
     }
@@ -2441,10 +2495,16 @@ app.post("/api/agents/:agentId/runtime/verification", scanRateLimit, async (req,
 
 app.get("/api/agents/:agentId/runtime/verification/report", async (req, res, next) => {
   try {
-    if (!(await requireEntitlement(req, res, "runtimeFirewall", "Enforcement verification reports require Builder or a higher plan."))) return;
+    const billing = await requireEntitlement(req, res, "enforcementVerification", "Enforcement Verification requires Builder or a higher plan.");
+    if (!billing) return;
+    if (!(await requireEntitlement(req, res, "exportReports", "Shareable enforcement verification reports require Builder or a higher plan."))) return;
     const agent = await repository.getAgent(req.params.agentId, req.auth.workspaceId);
     if (!agent) return res.status(404).json({ error: "Agent not found." });
-    const latest = await repository.getRuntimeVerification({ workspaceId: req.auth.workspaceId, agentId: agent.id });
+    const latest = await repository.getRuntimeVerification({
+      workspaceId: req.auth.workspaceId,
+      agentId: agent.id,
+      historyDays: effectiveEvidenceHistoryDays(billing),
+    });
     if (!latest) return res.status(404).json({ error: "Run enforcement verification before exporting its report." });
     const [workspacePolicy, contract] = await Promise.all([
       repository.getPolicy(req.auth.workspaceId),
@@ -2818,8 +2878,9 @@ app.post("/api/quickstart/demo", scanRateLimit, async (req, res, next) => {
       proof,
       demo: {
         isolated: true,
+        agentSlotExempt: true,
         execution: "simulation",
-        message: "This proof uses synthetic data and the pre-execution Runtime Firewall. No customer endpoint or payment system was called.",
+        message: "This proof uses synthetic data and the pre-execution Runtime Firewall. No customer endpoint or payment system was called, and the Quickstart simulator does not use a protected Agent slot.",
       },
     });
   } catch (error) {

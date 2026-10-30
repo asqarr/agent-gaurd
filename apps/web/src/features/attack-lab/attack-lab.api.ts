@@ -3,11 +3,22 @@ import { apiPath } from "../../shared/api/client";
 export type AttackLabScenarioId =
   | "refund_policy"
   | "argument_tampering"
-  | "approval_replay";
+  | "approval_replay"
+  | "injection_tool_chain"
+  | "tenant_exfiltration"
+  | "context_replay_burst";
 
 export type AttackLabStep = {
   label: string;
   status: "complete" | "allowed" | "blocked" | "safe";
+};
+
+export type AttackLabToolTrace = {
+  name: string;
+  arguments: Record<string, unknown>;
+  decision: "ALLOW" | "BLOCK" | "ERROR";
+  execution: "PASS_THROUGH" | "NOT_EXECUTED" | "SUPPRESSED";
+  reasons: string[];
 };
 
 export type AttackLabResult = {
@@ -19,6 +30,7 @@ export type AttackLabResult = {
   reasons: string[];
   summary: string;
   toolCall: { name: string; arguments: Record<string, unknown> };
+  toolTrace?: AttackLabToolTrace[];
   policy: {
     name: string;
     maxAmount: number;
@@ -34,12 +46,23 @@ export type AttackLabResult = {
     customerEndpointCalled: false;
     externalToolCalls: 0;
     financialSideEffects: 0;
+    tenantBoundaryEnforced?: boolean;
+    foreignOrderAccepted?: boolean;
+    sensitiveDataExposed?: boolean;
+    approvalContextMutationRejected?: boolean;
+    approvalConsumeAttempts?: number;
+    approvalConsumeWinners?: number;
   };
   approval?: {
     signatureValid: boolean;
     argumentsMatch?: boolean;
     firstAttemptAuthorized?: boolean;
     replayRejected?: boolean;
+    contextMutationRejected?: boolean;
+    alteredContextSignatureValid?: boolean;
+    attempts?: number;
+    authorizedAttempts?: number;
+    rejectedAttempts?: number;
     consumer?: string;
     boundTo?: string[];
   };

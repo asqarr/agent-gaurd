@@ -10,6 +10,7 @@ export function RemediationCopilot({
   verdict,
   policyVersion,
   storedGuidance,
+  readOnly = false,
   onRetest,
 }: {
   scanId: string;
@@ -20,6 +21,7 @@ export function RemediationCopilot({
     guidance: RemediationCopilotPlan;
     model: string;
   };
+  readOnly?: boolean;
   onRetest?: (scenarioId: string) => void;
 }) {
   const [requested, setRequested] = useState(Boolean(storedGuidance));
@@ -105,17 +107,18 @@ export function RemediationCopilot({
       {error ? <div className="remediation-copilot__error" role="alert"><Icon name="activity" size={14} /><span>{error.message || "The AI plan could not be generated."}</span></div> : null}
 
       <div className="remediation-copilot__footer">
-        {!requested || error ? (
+        {!readOnly && (!requested || error) ? (
           <button type="button" className="button button--subtle" onClick={() => generatePlan(Boolean(storedGuidance || hasPlan))} disabled={isLoading}>
             <Icon name="sparkle" size={14} />{error ? "Retry AI plan" : "Generate AI fix plan"}
           </button>
         ) : null}
-        {hasPlan && !isLoading ? (
+        {!readOnly && hasPlan && !isLoading ? (
           <button type="button" className="button button--subtle" onClick={() => generatePlan(true)} disabled={isLoading}>
             <Icon name="sparkle" size={14} />Regenerate with current provider
           </button>
         ) : null}
         {hasPlan && !isLoading ? <span className="remediation-copilot__saved"><Icon name="shield" size={12} />Saved to this scan</span> : null}
+        {readOnly ? <span className="remediation-copilot__saved">Read-only Â· new AI plans require Pro</span> : null}
         {onRetest ? <button type="button" className="button button--subtle" onClick={() => onRetest(scenarioId)}><Icon name="scan" size={13} />{hasPlan ? "Verify after fix" : "Retest this scenario"}</button> : null}
       </div>
 

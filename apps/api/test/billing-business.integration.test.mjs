@@ -71,7 +71,7 @@ test("billing rules enforce one-time free credits, add-ons, alerts and manual do
 
   const initial = await api("/api/billing");
   assert.equal(initial.body.plan.id, "free");
-  assert.equal(initial.body.plan.monthlyScanCredits, 20);
+  assert.equal(initial.body.plan.monthlyScanCredits, 9);
   assert.equal(initial.body.plan.scanCreditMode, "one_time");
   assert.equal(initial.body.usage.scanCreditsUsed, 0);
 
@@ -97,10 +97,9 @@ test("billing rules enforce one-time free credits, add-ons, alerts and manual do
     body: JSON.stringify({ agentId, scenarioIds: ["valid_refund", "amount_limit", "expired_order", "untrusted_claim", "boundary_refund"] }),
   });
   assert.equal((await queueScan()).response.status, 202);
-  assert.equal((await queueScan()).response.status, 202);
-  const atNinety = await api("/api/billing");
-  assert.equal(atNinety.body.usage.scanCreditsUsed, 18);
-  assert.ok(atNinety.body.usage.alerts.some((alert) => alert.resource === "scan_credits" && alert.threshold === 90));
+  const atAllowance = await api("/api/billing");
+  assert.equal(atAllowance.body.usage.scanCreditsUsed, 9);
+  assert.deepEqual(atAllowance.body.usage.alerts.filter((alert) => alert.resource === "scan_credits").map((alert) => alert.threshold), [70, 90, 100]);
 
   const blockedBeforeAddon = await queueScan();
   assert.equal(blockedBeforeAddon.response.status, 402);
@@ -130,15 +129,15 @@ test("billing rules enforce one-time free credits, add-ons, alerts and manual do
 
   assert.equal((await queueScan()).response.status, 202);
   const afterOverage = await api("/api/billing");
-  assert.equal(afterOverage.body.usage.scanCreditsUsed, 20);
-  assert.equal(afterOverage.body.usage.scanCreditAddonsRemaining, 193);
+  assert.equal(afterOverage.body.usage.scanCreditsUsed, 9);
+  assert.equal(afterOverage.body.usage.scanCreditAddonsRemaining, 191);
   assert.ok(afterOverage.body.usage.alerts.some((alert) => alert.threshold === 100));
 
   await query("UPDATE workspace_subscriptions SET current_period_end=NOW() - INTERVAL '1 day' WHERE workspace_id=$1", [workspaceId]);
   const afterPeriodBoundary = await api("/api/billing");
   assert.equal(afterPeriodBoundary.body.plan.id, "free");
-  assert.equal(afterPeriodBoundary.body.usage.scanCreditsUsed, 20);
-  assert.equal(afterPeriodBoundary.body.usage.scanCreditsIncluded, 20);
+  assert.equal(afterPeriodBoundary.body.usage.scanCreditsUsed, 9);
+  assert.equal(afterPeriodBoundary.body.usage.scanCreditsIncluded, 9);
 
   await query(
     "UPDATE workspace_subscriptions SET plan_id='builder', status='active', current_period_end=NOW() - INTERVAL '1 day', metadata='{}'::jsonb WHERE workspace_id=$1",
@@ -150,9 +149,9 @@ test("billing rules enforce one-time free credits, add-ons, alerts and manual do
   assert.equal(afterPaidPeriodBoundary.body.subscription.lastExpiryFallback.fromPlanId, "builder");
   assert.equal(afterPaidPeriodBoundary.body.entitlements.maxAgents, 1);
   assert.equal(afterPaidPeriodBoundary.body.entitlements.scenarioLimit, 5);
-  assert.equal(afterPaidPeriodBoundary.body.entitlements.runtimeFirewall, false);
-  assert.equal(afterPaidPeriodBoundary.body.usage.scanCreditsIncluded, 20);
-  assert.equal(afterPaidPeriodBoundary.body.usage.scanCreditsUsed, 20);
+  assert.equal(afterPaidPeriodBoundary.body.entitlements.runtimeFirewall, true);
+  assert.equal(afterPaidPeriodBoundary.body.usage.scanCreditsIncluded, 9);
+  assert.equal(afterPaidPeriodBoundary.body.usage.scanCreditsUsed, 9);
 
   await query(
     "UPDATE workspace_subscriptions SET plan_id='builder', status='active', current_period_end=NOW() + INTERVAL '30 days', metadata='{}'::jsonb WHERE workspace_id=$1",

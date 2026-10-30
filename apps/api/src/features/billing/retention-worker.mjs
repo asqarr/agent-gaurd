@@ -27,11 +27,15 @@ async function runEvidenceRetention() {
       error: error instanceof Error ? error.message : String(error),
     }));
   }
-  if (result.deletedScans > 0) {
+  if (result.deletedScans > 0 || result.deletedRuntimeEvents > 0 || result.deletedRuntimeVerificationRuns > 0) {
     console.log(JSON.stringify({
       event: "evidence.retention_purged",
       deletedScans: result.deletedScans,
-      candidates: result.candidates,
+      scanCandidates: result.candidates,
+      deletedRuntimeEvents: result.deletedRuntimeEvents,
+      runtimeEventCandidates: result.runtimeEventCandidates,
+      deletedRuntimeVerificationRuns: result.deletedRuntimeVerificationRuns,
+      runtimeVerificationCandidates: result.runtimeVerificationCandidates,
       durationMs: result.durationMs,
     }));
   }

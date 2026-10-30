@@ -151,6 +151,8 @@ function RemediationCard({
   verdict,
   policyVersion,
   canGenerateAi,
+  aiCopilotEnabled,
+  onUpgradeToPro,
   storedGuidance,
   policyFix,
   policy,
@@ -169,6 +171,8 @@ function RemediationCard({
   verdict?: string | null;
   policyVersion?: number;
   canGenerateAi: boolean;
+  aiCopilotEnabled: boolean;
+  onUpgradeToPro: () => void;
   storedGuidance?: StoredRemediationCopilotGuidance;
   policyFix?: PolicyFixProposal;
   policy: WorkspacePolicy;
@@ -209,7 +213,13 @@ function RemediationCard({
         onScanProgress={onScanProgress}
         onVerificationComplete={onVerificationComplete}
       /> : null}
-      {remediation.status !== "protected" && canGenerateAi ? <RemediationCopilot scanId={scanId} scenarioId={remediation.scenarioId} verdict={verdict} policyVersion={policyVersion} storedGuidance={storedGuidance} onRetest={onRetest} /> : onRetest ? <button type="button" className="button button--subtle scan-remediation__retest" onClick={() => onRetest(remediation.retest.scenarioId)}><Icon name="activity" size={14} />{remediation.retest.label}</button> : null}
+      {remediation.status !== "protected" && canGenerateAi
+        ? aiCopilotEnabled || storedGuidance
+          ? <RemediationCopilot scanId={scanId} scenarioId={remediation.scenarioId} verdict={verdict} policyVersion={policyVersion} storedGuidance={storedGuidance} readOnly={!aiCopilotEnabled} onRetest={onRetest} />
+          : <button type="button" className="button button--subtle scan-remediation__retest" onClick={onUpgradeToPro}><Icon name="lock" size={14} />Unlock AI fix plan with Pro</button>
+        : onRetest
+          ? <button type="button" className="button button--subtle scan-remediation__retest" onClick={() => onRetest(remediation.retest.scenarioId)}><Icon name="activity" size={14} />{remediation.retest.label}</button>
+          : null}
     </div>
   );
 }
@@ -235,6 +245,9 @@ function AttackPathEvidence({ paths }: { paths: AttackPathResult[] }) {
 
 export function ScanEvidencePanel({
   scan,
+  aiCopilotEnabled,
+  onUpgradeToPro,
+  onUpgradeToBuilder,
   onClose,
   onRetest,
   policy,
@@ -246,6 +259,9 @@ export function ScanEvidencePanel({
   onVerificationComplete,
 }: {
   scan: Scan;
+  aiCopilotEnabled: boolean;
+  onUpgradeToPro: () => void;
+  onUpgradeToBuilder: () => void;
   onClose: () => void;
   onRetest?: (scenarioId: string) => void;
   policy: WorkspacePolicy;
@@ -277,13 +293,17 @@ export function ScanEvidencePanel({
           </p>
         </div>
         <div className="scan-evidence__header-actions">
-          {scan.status === "completed" ? (
+          {scan.status === "completed" && scan.reportAccess?.available ? (
             <button
               type="button"
               className="button button--subtle"
               onClick={() => window.open(`/api/scans/${encodeURIComponent(scan.id)}/report`, "_blank", "noopener,noreferrer")}
             >
-              Share report
+              {scan.reportAccess.preview ? "Preview evidence report" : "Share report"}
+            </button>
+          ) : scan.status === "completed" && scan.reportAccess ? (
+            <button type="button" className="button button--subtle" onClick={onUpgradeToBuilder}>
+              <Icon name="lock" size={14} /> Export report · Builder
             </button>
           ) : null}
         </div>
@@ -436,7 +456,7 @@ export function ScanEvidencePanel({
                   <pre>{JSON.stringify(result.call.arguments, null, 2)}</pre>
                 </div>
               ) : null}
-              {result.remediation ? <RemediationCard remediation={result.remediation} onRetest={onRetest} scanId={scan.id} verdict={result.verdict} policyVersion={scan.policyVersion} canGenerateAi={scan.status === "completed"} storedGuidance={result.copilotGuidance} policyFix={result.policyFix} policy={policy} canManagePolicy={canManagePolicy} scanning={scanning} onPolicyUpdated={onPolicyUpdated} onBusyChange={onBusyChange} onScanProgress={onScanProgress} onVerificationComplete={onVerificationComplete} sourceScan={scan} scanResult={result} /> : null}
+              {result.remediation ? <RemediationCard remediation={result.remediation} onRetest={onRetest} scanId={scan.id} verdict={result.verdict} policyVersion={scan.policyVersion} canGenerateAi={scan.status === "completed"} aiCopilotEnabled={aiCopilotEnabled} onUpgradeToPro={onUpgradeToPro} storedGuidance={result.copilotGuidance} policyFix={result.policyFix} policy={policy} canManagePolicy={canManagePolicy} scanning={scanning} onPolicyUpdated={onPolicyUpdated} onBusyChange={onBusyChange} onScanProgress={onScanProgress} onVerificationComplete={onVerificationComplete} sourceScan={scan} scanResult={result} /> : null}
             </article>
           ))}
         </div>
@@ -453,10 +473,14 @@ export function ScanEvidencePanel({
 export function LiveScanPanel({
   scan,
   demoProof,
+  showProUpsell = false,
+  onProUpgrade,
   onClose,
 }: {
   scan: Scan;
   demoProof?: SecurityDemoProof | null;
+  showProUpsell?: boolean;
+  onProUpgrade?: () => void;
   onClose: () => void;
 }) {
   const [now, setNow] = useState(Date.now());
@@ -561,6 +585,20 @@ export function LiveScanPanel({
         ))}
       </div>
       {scan.error ? <div className="live-scan-error"><strong>Worker error</strong><span>{scan.error}</span></div> : null}
+      {showProUpsell && scan.status === "completed" && scan.failed > 0 ? (
+        <section className="scan-pro-upsell" aria-label="Pro security response">
+          <div className="scan-pro-upsell__copy">
+            <span className="eyebrow eyebrow--cyan">PRO RESPONSE Â· {scan.failed} FINDING{scan.failed === 1 ? "" : "S"}</span>
+            <h3>Turn these findings into an approved protection plan.</h3>
+            <p>Pro Autopilot runs the complete 12-scenario assessment and creates a Security Blueprint. Your workspace owner can review it before protection is applied.</p>
+          </div>
+          {onProUpgrade ? (
+            <button type="button" className="button button--primary scan-pro-upsell__action" onClick={onProUpgrade}>
+              Explore Pro protection <Icon name="arrow" size={14} />
+            </button>
+          ) : null}
+        </section>
+      ) : null}
       {terminal ? <div className="live-scan-panel__footer">The complete evidence is available in the Scans view.</div> : null}
     </section>
   );

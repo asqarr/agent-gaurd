@@ -7,6 +7,7 @@ export type QuickstartDemo = {
   proof: SecurityDemoProof;
   demo: {
     isolated: boolean;
+    agentSlotExempt: boolean;
     execution: string;
     message: string;
   };

@@ -40,6 +40,7 @@ import type {
   SecurityDemoProof,
   Tool,
   Incident,
+  BillingState,
 } from "../shared/types/api";
 import { Icon, type IconName } from "../shared/ui/Icon";
 import { Dialog, type DialogRequest } from "../shared/ui/Dialog";
@@ -257,6 +258,10 @@ function WorkspaceView({
   onQuickStart,
   quickStartBusy,
   onNavigate,
+  onUpgradePlan,
+  hasAiRemediationCopilot,
+  hasSignedAlertWebhooks,
+  hasEnforcementVerification,
   onPolicyUpdated,
   onScanBusyChange,
   onScanProgress,
@@ -288,6 +293,10 @@ function WorkspaceView({
   onQuickStart: () => void;
   quickStartBusy: boolean;
   onNavigate: (page: string) => void;
+  onUpgradePlan: (planId: string) => void;
+  hasAiRemediationCopilot: boolean;
+  hasSignedAlertWebhooks: boolean;
+  hasEnforcementVerification: boolean;
   onPolicyUpdated: (policy: Overview["policy"]) => void;
   onScanBusyChange: (busy: boolean) => void;
   onScanProgress: (scan: Scan) => void;
@@ -739,28 +748,32 @@ function WorkspaceView({
         authUser={authUser}
         onUserUpdated={onUserUpdated}
         onLogout={onLogout}
+        onUpgradePlan={onUpgradePlan}
+        aiCopilotEnabled={hasAiRemediationCopilot}
       />
     );
   }
 
   if (active === "Scenarios") {
-    return <ScenarioLibrary onUpgrade={() => onNavigate("Plans")} />;
+    return <ScenarioLibrary onUpgrade={() => onUpgradePlan("builder")} />;
   }
 
   if (active === "Contracts") {
     return (
-      <SecurityContractPage
-        agents={agents}
-        selectedAgentId={selectedAgent}
-        onSelectAgent={setSelectedAgent}
-        onUpgrade={() => onNavigate("Plans")}
-      />
+      <PlanGate entitlement="securityContracts" onUpgrade={onUpgradePlan}>
+        <SecurityContractPage
+          agents={agents}
+          selectedAgentId={selectedAgent}
+          onSelectAgent={setSelectedAgent}
+          onUpgrade={() => onUpgradePlan("builder")}
+        />
+      </PlanGate>
     );
   }
 
   if (active === "Autopilot") {
     return (
-      <PlanGate entitlement="autopilot" onUpgrade={() => onNavigate("Plans")}>
+      <PlanGate entitlement="autopilot" onUpgrade={onUpgradePlan}>
         <AutopilotPage
           agents={agents}
           selectedAgentId={selectedAgent}
@@ -773,7 +786,7 @@ function WorkspaceView({
 
   if (active === "Sentinel") {
     return (
-      <PlanGate entitlement="sentinel" onUpgrade={() => onNavigate("Plans")}>
+      <PlanGate entitlement="sentinel" onUpgrade={onUpgradePlan}>
         <SentinelPage
           agents={agents}
           selectedAgentId={selectedAgent}
@@ -785,8 +798,12 @@ function WorkspaceView({
 
   if (active === "Incidents") {
     return (
-      <PlanGate entitlement="incidentCenter" onUpgrade={() => onNavigate("Plans")}>
-        <IncidentCenterPage authUser={authUser} />
+      <PlanGate entitlement="incidentCenter" onUpgrade={onUpgradePlan}>
+        <IncidentCenterPage
+          authUser={authUser}
+          hasAlertWebhooks={hasSignedAlertWebhooks}
+          onUpgrade={() => onUpgradePlan("team")}
+        />
       </PlanGate>
     );
   }
@@ -804,6 +821,8 @@ function WorkspaceView({
         quickStartBusy={quickStartBusy}
         onRunScan={onScan}
         scanBusy={scanning}
+        canRunEnforcementVerification={hasEnforcementVerification}
+        onUpgradeToBuilder={() => onUpgradePlan("builder")}
       />
     );
   }
@@ -1015,7 +1034,7 @@ function WorkspaceView({
                   error={runtimeError}
                   onEnable={() => void enableRuntimeProtection()}
                   onDisable={requestRuntimeDisable}
-                  onUpgrade={() => onNavigate("Plans")}
+                  onUpgrade={() => onUpgradePlan("builder")}
                 />
                 {agentEditError ? <div className="auth-error">{agentEditError}</div> : null}
                 <button type="button" className="danger-text-button" onClick={removeSelectedAgent} disabled={agentDeleteBusy}>
@@ -1127,6 +1146,9 @@ function WorkspaceView({
               {selectedScan ? (
                 <ScanEvidencePanel
                   scan={selectedScan}
+                  aiCopilotEnabled={hasAiRemediationCopilot}
+                  onUpgradeToPro={() => onUpgradePlan("team")}
+                  onUpgradeToBuilder={() => onUpgradePlan("builder")}
                   onRetest={(scenarioId) => onRetest(selectedScan.agentId, scenarioId)}
                   policy={overview.policy}
                   canManagePolicy={authUser.role === "owner" || authUser.role === "admin"}
@@ -1532,6 +1554,8 @@ function App() {
     "loading" | "authenticated" | "unauthenticated" | "offline"
   >("loading");
   const [authUser, setAuthUser] = useState<SessionUser | null>(null);
+  const [billingPlanId, setBillingPlanId] = useState<string | null>(null);
+  const [billingEntitlements, setBillingEntitlements] = useState<BillingState["entitlements"] | null>(null);
   const [showConnectForm, setShowConnectForm] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -1573,12 +1597,21 @@ function App() {
   }, [authState]);
 
   useEffect(() => {
-    if (authState !== "authenticated") return;
+    if (authState !== "authenticated") {
+      setBillingPlanId(null);
+      setBillingEntitlements(null);
+      return;
+    }
+    setBillingPlanId(null);
+    setBillingEntitlements(null);
     let cancelled = false;
     let timer: number | undefined;
     void getBillingState()
       .then((billing) => {
-        if (cancelled || !billing.entitlements.incidentCenter) return;
+        if (cancelled) return;
+        setBillingPlanId(billing.plan.id);
+        setBillingEntitlements(billing.entitlements);
+        if (!billing.entitlements.incidentCenter) return;
         const refresh = () => {
           void getIncidentSummary()
             .then((next) => {
@@ -1597,6 +1630,20 @@ function App() {
       if (timer) window.clearInterval(timer);
     };
   }, [authState]);
+
+  useEffect(() => {
+    if (authState !== "authenticated") return;
+    let cancelled = false;
+    void getBillingState()
+      .then((billing) => {
+        if (!cancelled) {
+          setBillingPlanId(billing.plan.id);
+          setBillingEntitlements(billing.entitlements);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [authState, active]);
 
   useEffect(() => {
     getSession()
@@ -1685,7 +1732,7 @@ function App() {
       setSelectedAgent(result.agent.id);
       setDemoProof(result.proof);
       setActiveScan(result.scan);
-      setToast("Gateway proof ready · running the first five scenarios…");
+      setToast("Gateway proof ready · simulator uses no Agent slot · running the first five scenarios…");
       const scan = await waitForScan(result.scan, (nextScan) => {
         setActiveScan(nextScan);
         const runningScenario = nextScan.progress?.find((item) => item.status === "running");
@@ -1957,6 +2004,11 @@ function App() {
           <LiveScanPanel
             scan={activeScan}
             demoProof={demoProof}
+            showProUpsell={billingPlanId === "free"}
+            onProUpgrade={() => {
+              setActiveScan(null);
+              openUpgradePlans("team");
+            }}
             onClose={() => setActiveScan(null)}
           />
         ) : null}
@@ -2120,6 +2172,8 @@ function App() {
             quickStartBusy={quickStartBusy}
             onRunScan={handleScan}
             scanBusy={scanning}
+            canRunEnforcementVerification={Boolean(billingEntitlements?.enforcementVerification)}
+            onUpgradeToBuilder={() => openUpgradePlans("builder")}
           />
         ) : null}
 
@@ -2386,6 +2440,10 @@ function App() {
             onQuickStart={handleQuickStart}
             quickStartBusy={quickStartBusy}
             onNavigate={setActive}
+            onUpgradePlan={openUpgradePlans}
+            hasAiRemediationCopilot={Boolean(billingEntitlements?.aiRemediationCopilot)}
+            hasSignedAlertWebhooks={Boolean(billingEntitlements?.alertWebhooks)}
+            hasEnforcementVerification={Boolean(billingEntitlements?.enforcementVerification)}
             onPolicyUpdated={handlePolicyUpdated}
             onScanBusyChange={setScanning}
             onScanProgress={setActiveScan}

@@ -151,16 +151,23 @@
 }
 
 .mk-pricing-card--featured {
-  border-color: #4b8580;
-  box-shadow: 0 0 25px rgba(72, 202, 188, .09);
+  border-color: #65d9cf;
+  background: linear-gradient(145deg, rgba(22, 49, 63, .98), rgba(8, 20, 33, .96));
+  box-shadow: 0 0 0 1px rgba(101, 217, 207, .2), 0 0 30px rgba(72, 202, 188, .16);
+  transform: translateY(-4px);
 }
 
 .mk-pricing-card__badge {
   position: absolute;
   top: 13px;
   right: 14px;
-  color: #e6c27b;
+  padding: 5px 8px;
+  border: 1px solid rgba(101, 217, 207, .42);
+  border-radius: 999px;
+  color: #a2f4eb;
+  background: rgba(36, 117, 111, .22);
   font: 8px "DM Mono", monospace;
+  letter-spacing: .05em;
 }
 
 .mk-pricing-card__top {
@@ -299,6 +306,7 @@
   .mk-trust-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mk-report-example { grid-template-columns: 1fr; }
   .mk-pricing-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mk-pricing-card--featured { transform: none; }
   .mk-pricing__value-bridge { grid-template-columns: 1fr; }
 }
 
@@ -310,6 +318,7 @@
   .mk-pricing__note { max-width: none; text-align: left; }
   .mk-pricing__value-bridge { padding: 14px; }
   .mk-pricing-grid { grid-template-columns: 1fr; margin-top: 28px; }
+  .mk-pricing-card--featured { transform: none; }
   .mk-pricing-card > p { min-height: 0; }
   .mk-footer { font-size: 9px; line-height: 1.6; }
 }

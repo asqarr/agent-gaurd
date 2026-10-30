@@ -25,8 +25,10 @@ function buildSteps(
   verification: EnforcementVerification | null,
   verificationCurrent: boolean,
   verificationLoading: boolean,
+  canRunEnforcementVerification: boolean,
 ): SetupStep[] {
-  const connected = agents.length > 0;
+  const protectedAgents = agents.filter((current) => current.mode !== "demo_simulator");
+  const connected = protectedAgents.length > 0;
   const scansForAgent = overview.recentScans.filter(
     (scan) => scan.agentId === agent?.id,
   );
@@ -52,8 +54,10 @@ function buildSteps(
       id: "connect",
       label: "Connect an agent",
       detail: connected
-        ? `${agents.length} agent${agents.length === 1 ? "" : "s"} in your workspace`
-        : "Add your first customer endpoint",
+        ? `${protectedAgents.length} protected Agent${protectedAgents.length === 1 ? "" : "s"} connected`
+        : agents.some((current) => current.mode === "demo_simulator")
+          ? "Quickstart simulator is ready; connect your own endpoint for live protection"
+          : "Add your first customer endpoint",
       done: connected,
       icon: "plug",
       action: connected ? "Manage connections" : "Connect agent",
@@ -101,6 +105,8 @@ function buildSteps(
       label: "Verify enforcement",
       detail: !protectedAgent
         ? "Enable Runtime Firewall before running the isolated checks"
+        : !canRunEnforcementVerification
+          ? "Available with Builder or a higher plan"
         : verificationLoading
           ? "Loading the latest verification evidence"
           : enforcementVerified
@@ -112,8 +118,8 @@ function buildSteps(
                 : "Run isolated policy, SDK, replay, and outage checks",
       done: enforcementVerified,
       icon: "shield",
-      action: !protectedAgent ? "Open Runtime Firewall" : "Run verification",
-      destination: "Agents",
+      action: !protectedAgent ? "Open Runtime Firewall" : canRunEnforcementVerification ? "Run verification" : "Explore Builder",
+      destination: !canRunEnforcementVerification ? "Plans" : "Agents",
     },
     {
       id: "monitor",
@@ -165,6 +171,8 @@ export function SetupCenter({
   quickStartBusy = false,
   onRunScan,
   scanBusy = false,
+  canRunEnforcementVerification = false,
+  onUpgradeToBuilder,
 }: {
   compact?: boolean;
   agents: Agent[];
@@ -177,6 +185,8 @@ export function SetupCenter({
   quickStartBusy?: boolean;
   onRunScan: () => void;
   scanBusy?: boolean;
+  canRunEnforcementVerification?: boolean;
+  onUpgradeToBuilder: () => void;
 }) {
   const [verification, setVerification] = useState<EnforcementVerification | null>(null);
   const [verificationCurrent, setVerificationCurrent] = useState(false);
@@ -187,11 +197,13 @@ export function SetupCenter({
     () => agents.find((agent) => agent.id === selectedAgentId) ?? agents[0],
     [agents, selectedAgentId],
   );
+  const hasCustomerAgent = agents.some((agent) => agent.mode !== "demo_simulator");
+  const hasQuickstartSimulator = agents.some((agent) => agent.mode === "demo_simulator");
   const selectedAgentIdRef = useRef(selected?.id);
   selectedAgentIdRef.current = selected?.id;
   const steps = useMemo(
-    () => buildSteps(selected, agents, overview, verification, verificationCurrent, verificationLoading),
-    [selected, agents, overview, verification, verificationCurrent, verificationLoading],
+    () => buildSteps(selected, agents, overview, verification, verificationCurrent, verificationLoading, canRunEnforcementVerification),
+    [selected, agents, overview, verification, verificationCurrent, verificationLoading, canRunEnforcementVerification],
   );
   const nextIndex = steps.findIndex((step) => !step.done);
   const next = steps[nextIndex === -1 ? steps.length - 1 : nextIndex];
@@ -202,7 +214,7 @@ export function SetupCenter({
     setVerification(null);
     setVerificationCurrent(false);
     setVerificationError("");
-    if (!selected?.id || !selected.runtimeEnabled) {
+    if (!canRunEnforcementVerification || !selected?.id || !selected.runtimeEnabled) {
       setVerificationLoading(false);
       return () => { current = false; };
     }
@@ -220,11 +232,11 @@ export function SetupCenter({
         if (current) setVerificationLoading(false);
       });
     return () => { current = false; };
-  }, [selected?.id, selected?.runtimeEnabled]);
+  }, [canRunEnforcementVerification, selected?.id, selected?.runtimeEnabled]);
 
   async function runVerification() {
     const agentId = selected?.id;
-    if (!agentId || !selected.runtimeEnabled || verificationBusy) return;
+    if (!canRunEnforcementVerification || !agentId || !selected.runtimeEnabled || verificationBusy) return;
     setVerificationBusy(true);
     setVerificationError("");
     try {
@@ -241,7 +253,7 @@ export function SetupCenter({
   }
 
   function takeAction(step: SetupStep) {
-    if (step.destination === "Integrations" && !agents.length) {
+    if (step.destination === "Integrations" && !hasCustomerAgent) {
       onConnect();
       return;
     }
@@ -250,6 +262,10 @@ export function SetupCenter({
       return;
     }
     if (step.id === "verify") {
+      if (!canRunEnforcementVerification) {
+        onUpgradeToBuilder();
+        return;
+      }
       if (!selected?.runtimeEnabled) onNavigate("Agents");
       else void runVerification();
       return;
@@ -282,20 +298,22 @@ export function SetupCenter({
         </div>
         <div className="setup-center__compact-action">
           <div>
-            <strong>{!agents.length ? "Prove the Gateway in one click" : allDone ? "Protection is active" : next.label}</strong>
+            <strong>{!hasCustomerAgent ? (hasQuickstartSimulator ? "Connect your own Agent" : "Prove the Gateway in one click") : allDone ? "Protection is active" : next.label}</strong>
             <span>
-              {!agents.length
+              {!hasCustomerAgent && hasQuickstartSimulator
+                ? "Your isolated Quickstart simulator does not use an Agent slot. Connect a customer endpoint to start your live pilot."
+                : !hasCustomerAgent
                 ? "Run a synthetic $100 refund attempt. The $50 policy blocks it before execution."
                 : allDone
                 ? "Synthetic checks passed. Validate your own executor in an isolated Staging harness before Production."
                 : next.detail}
             </span>
           </div>
-          {!agents.length ? (
+          {!hasCustomerAgent ? (
             <div className="setup-center__compact-actions">
-              <button type="button" className="button button--primary" onClick={onQuickStart} disabled={quickStartBusy}>
+              {!hasQuickstartSimulator ? <button type="button" className="button button--primary" onClick={onQuickStart} disabled={quickStartBusy}>
                 <Icon name="shield" size={14} /> {quickStartBusy ? "Preparing…" : "Run safe demo"} <Icon name="arrow" size={14} />
-              </button>
+              </button> : null}
               <button type="button" className="text-button" onClick={onConnect}>Connect endpoint</button>
             </div>
           ) : (
@@ -340,21 +358,20 @@ export function SetupCenter({
         </label>
       </div>
 
-      {!agents.length ? (
+      {!hasCustomerAgent ? (
         <div className="setup-center__empty panel">
           <div className="setup-center__empty-icon">
             <Icon name="plug" size={24} />
           </div>
           <span className="eyebrow eyebrow--cyan">FIRST STEP</span>
-          <h3>Connect your first Agent</h3>
-          <p>
-            Once connected, Autopilot will discover its action surface and build
-            the first security blueprint.
-          </p>
+          <h3>{hasQuickstartSimulator ? "Connect your own Agent" : "Connect your first Agent"}</h3>
+          <p>{hasQuickstartSimulator
+            ? "The isolated Quickstart simulator remains available for its synthetic evidence and does not consume your protected Agent slot. Connect a customer endpoint to begin the live pilot."
+            : "Once connected, AgentGuard can assess its action surface and help you choose the next protection step."}</p>
           <div className="setup-center__empty-actions">
-            <button type="button" className="button button--primary" onClick={onQuickStart} disabled={quickStartBusy}>
+            {!hasQuickstartSimulator ? <button type="button" className="button button--primary" onClick={onQuickStart} disabled={quickStartBusy}>
               <Icon name="shield" size={16} /> {quickStartBusy ? "Preparing isolated demo…" : "Run safe security demo"} <Icon name="arrow" size={15} />
-            </button>
+            </button> : null}
             <button type="button" className="button button--subtle" onClick={onConnect} disabled={quickStartBusy}>
               <Icon name="plus" size={16} /> Connect my endpoint
             </button>
@@ -516,15 +533,21 @@ export function SetupCenter({
               </>
             ) : (
               <div className="setup-verification__empty">
-                <span>{selected?.runtimeEnabled ? "Run the verifier to create workspace-scoped evidence." : "Enable Runtime Firewall for this Agent first. The verifier itself uses synthetic inputs only."}</span>
+                <span>{!canRunEnforcementVerification
+                  ? "Enforcement Verification, including the isolated approval replay proof, is available with Builder or a higher plan."
+                  : selected?.runtimeEnabled
+                    ? "Run the verifier to create workspace-scoped evidence."
+                    : "Enable Runtime Firewall for this Agent first. The verifier itself uses synthetic inputs only."}</span>
               </div>
             )}
             {verificationError ? <div className="setup-verification__error" role="alert">{verificationError}</div> : null}
             <div className="setup-verification__footer">
               <small>AgentGuard control-plane + bundled SDK conformance · customer application code is not inspected · not a security certification</small>
               <div>
-                {verification ? <a className="button button--subtle" href={`/api/agents/${selected?.id}/runtime/verification/report`} target="_blank" rel="noreferrer">Open proof report <Icon name="arrow" size={13} /></a> : null}
-                {selected?.runtimeEnabled ? (
+                {verification && canRunEnforcementVerification ? <a className="button button--subtle" href={`/api/agents/${selected?.id}/runtime/verification/report`} target="_blank" rel="noreferrer">Open proof report <Icon name="arrow" size={13} /></a> : null}
+                {!canRunEnforcementVerification ? (
+                  <button type="button" className="button button--primary" onClick={onUpgradeToBuilder}>Unlock with Builder <Icon name="arrow" size={13} /></button>
+                ) : selected?.runtimeEnabled ? (
                   <button type="button" className="button button--primary" onClick={() => void runVerification()} disabled={verificationBusy || verificationLoading}>
                     <Icon name="activity" size={14} /> {verificationBusy ? "Running isolated checks…" : verification ? "Run again" : "Run verification"}
                   </button>

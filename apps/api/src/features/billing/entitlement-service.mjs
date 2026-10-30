@@ -8,9 +8,12 @@ const planLabels = Object.freeze({
 });
 
 const entitlementMinimumPlans = Object.freeze({
-  runtimeFirewall: "builder",
+  runtimeFirewall: "free",
+  enforcementVerification: "builder",
+  securityContracts: "builder",
   incidentCenter: "builder",
   exportReports: "builder",
+  aiRemediationCopilot: "team",
   autopilot: "team",
   sentinel: "team",
   alertWebhooks: "team",

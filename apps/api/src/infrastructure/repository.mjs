@@ -224,8 +224,11 @@ function mapBillingPlan(row) {
     historyDays: Number(row.history_days),
     seatLimit: Number(row.seat_limit),
     runtimeFirewall: Boolean(row.runtime_firewall),
+    enforcementVerification: Boolean(row.enforcement_verification),
     scenarioLimit: Number(row.scenario_limit ?? scenarios.length),
     scanCreditsPerScan: scanCreditsForScenarios(scenarios.slice(0, Number(row.scenario_limit ?? scenarios.length))),
+    securityContracts: Boolean(row.security_contracts),
+    aiRemediationCopilot: Boolean(row.ai_remediation_copilot),
     autopilot: Boolean(row.autopilot),
     sentinel: Boolean(row.sentinel),
     incidentCenter: Boolean(row.incident_center),
@@ -244,7 +247,8 @@ async function ensureWorkspaceSubscription(client, workspaceId) {
     `SELECT s.*, p.name AS plan_name, p.description AS plan_description,
             p.billing_interval, p.price_usd_cents, p.max_agents,
             p.monthly_scan_credits, p.history_days, p.seat_limit,
-            p.runtime_firewall, p.scenario_limit, p.autopilot, p.sentinel,
+            p.runtime_firewall, p.scenario_limit, p.enforcement_verification, p.security_contracts,
+            p.ai_remediation_copilot, p.autopilot, p.sentinel,
             p.incident_center, p.alert_webhooks, p.export_reports,
             p.max_webhooks, p.runtime_decisions_included, p.scan_credit_mode,
             p.white_label_reports, p.multi_client_management, p.features
@@ -268,7 +272,8 @@ async function ensureWorkspaceSubscription(client, workspaceId) {
     `SELECT s.*, p.name AS plan_name, p.description AS plan_description,
             p.billing_interval, p.price_usd_cents, p.max_agents,
             p.monthly_scan_credits, p.history_days, p.seat_limit,
-            p.runtime_firewall, p.scenario_limit, p.autopilot, p.sentinel,
+            p.runtime_firewall, p.scenario_limit, p.enforcement_verification, p.security_contracts,
+            p.ai_remediation_copilot, p.autopilot, p.sentinel,
             p.incident_center, p.alert_webhooks, p.export_reports,
             p.max_webhooks, p.runtime_decisions_included, p.scan_credit_mode,
             p.white_label_reports, p.multi_client_management, p.features
@@ -408,8 +413,11 @@ function mapBillingState(state) {
       active: state.active,
       maxAgents: state.active ? state.plan.maxAgents + balances.agentSlots : 0,
       runtimeFirewall: state.active && state.plan.runtimeFirewall,
+      enforcementVerification: state.active && state.plan.enforcementVerification,
       scenarioLimit: state.active ? state.plan.scenarioLimit : 0,
       fullScenarioSuite: state.active && state.plan.scenarioLimit >= scenarios.length,
+      securityContracts: state.active && state.plan.securityContracts,
+      aiRemediationCopilot: state.active && state.plan.aiRemediationCopilot,
       autopilot: state.active && state.plan.autopilot,
       sentinel: state.active && state.plan.sentinel,
       incidentCenter: state.active && state.plan.incidentCenter,
@@ -500,10 +508,14 @@ export async function getUsageEconomics(workspaceId) {
       [workspaceId],
     ),
     query(
-      `SELECT finished_at, candidates, deleted_scans, duration_ms, status
+      `SELECT finished_at, candidates, deleted_scans,
+              runtime_verification_candidates, deleted_runtime_verification_runs,
+              runtime_event_candidates, deleted_runtime_events, duration_ms, status
        FROM evidence_retention_runs
+       WHERE workspace_id=$1
        ORDER BY finished_at DESC
        LIMIT 1`,
+      [workspaceId],
     ),
   ]);
   const row = aggregate.rows[0] ?? {};
@@ -594,6 +606,10 @@ export async function getUsageEconomics(workspaceId) {
           lastRunAt: retention.rows[0].finished_at,
           candidates: Number(retention.rows[0].candidates ?? 0),
           deletedScans: Number(retention.rows[0].deleted_scans ?? 0),
+          runtimeVerificationCandidates: Number(retention.rows[0].runtime_verification_candidates ?? 0),
+          deletedRuntimeVerificationRuns: Number(retention.rows[0].deleted_runtime_verification_runs ?? 0),
+          runtimeEventCandidates: Number(retention.rows[0].runtime_event_candidates ?? 0),
+          deletedRuntimeEvents: Number(retention.rows[0].deleted_runtime_events ?? 0),
           durationMs: Number(retention.rows[0].duration_ms ?? 0),
           status: retention.rows[0].status,
         }
@@ -673,7 +689,8 @@ export async function getBillingState(workspaceId) {
     `SELECT s.*, p.name AS plan_name, p.description AS plan_description,
             p.billing_interval, p.price_usd_cents, p.max_agents,
             p.monthly_scan_credits, p.history_days, p.seat_limit,
-            p.runtime_firewall, p.scenario_limit, p.autopilot, p.sentinel,
+              p.runtime_firewall, p.scenario_limit, p.enforcement_verification, p.security_contracts,
+            p.ai_remediation_copilot, p.autopilot, p.sentinel,
             p.incident_center, p.alert_webhooks, p.export_reports,
             p.max_webhooks, p.runtime_decisions_included, p.scan_credit_mode,
             p.white_label_reports, p.multi_client_management, p.features,
@@ -2084,7 +2101,7 @@ export async function getWorkspaceSettings({ userId, workspaceId }) {
     query(
       `SELECT w.id, w.name, w.created_at,
               (SELECT COUNT(*)::int FROM memberships m WHERE m.workspace_id = w.id) AS member_count,
-              (SELECT COUNT(*)::int FROM agents a WHERE a.workspace_id = w.id) AS agent_count
+      (SELECT COUNT(*)::int FROM agents a WHERE a.workspace_id = w.id AND a.mode IS DISTINCT FROM 'demo_simulator') AS agent_count
        FROM workspaces w
        WHERE w.id = $1`,
       [workspaceId],
@@ -2574,12 +2591,17 @@ export async function claimNextIncidentDelivery() {
               a.name AS agent_name
        FROM incident_webhook_deliveries d
        JOIN alert_webhooks w ON w.id=d.webhook_id AND w.enabled=TRUE
+       JOIN workspace_subscriptions ws ON ws.workspace_id=d.workspace_id
+       JOIN subscription_plans webhook_plan ON webhook_plan.id = CASE
+         WHEN ws.status IN ('trialing', 'active', 'canceled') AND ws.current_period_end > NOW() THEN ws.plan_id
+         ELSE 'free'
+       END AND webhook_plan.alert_webhooks=TRUE
        JOIN incident_notifications n ON n.id=d.notification_id
        LEFT JOIN agents a ON a.id=n.agent_id
        WHERE (d.status='pending' AND d.next_attempt_at <= NOW())
           OR (d.status='processing' AND d.locked_at < NOW() - INTERVAL '5 minutes')
        ORDER BY d.next_attempt_at ASC
-       FOR UPDATE OF d SKIP LOCKED LIMIT 1`,
+       LIMIT 1 FOR UPDATE OF d SKIP LOCKED`,
     );
     const row = result.rows[0];
     if (!row) return null;
@@ -2940,7 +2962,7 @@ export async function getSentinelDriftEvent({ workspaceId, eventId }) {
 }
 
 export async function getSentinelOverview(workspaceId) {
-  const agents = await listAgents(workspaceId);
+  const agents = (await listAgents(workspaceId)).filter((agent) => agent.mode !== "demo_simulator");
   const states = await Promise.all(
     agents.map((agent) => getSentinelAgentState({ workspaceId, agentId: agent.id })),
   );
@@ -2961,11 +2983,15 @@ export async function claimSentinelTargets(limit = 200) {
   const safeLimit = Math.min(1000, Math.max(1, Number(limit) || 200));
   const result = await query(
     `WITH due_targets AS (
-       SELECT id FROM agents
-       WHERE sentinel_enabled=TRUE
-       ORDER BY sentinel_last_checked_at ASC NULLS FIRST, created_at ASC, id ASC
-       FOR UPDATE SKIP LOCKED
-       LIMIT $1
+       SELECT a.id FROM agents a
+       JOIN workspace_subscriptions ws ON ws.workspace_id=a.workspace_id
+       JOIN subscription_plans sentinel_plan ON sentinel_plan.id = CASE
+         WHEN ws.status IN ('trialing', 'active', 'canceled') AND ws.current_period_end > NOW() THEN ws.plan_id
+         ELSE 'free'
+       END AND sentinel_plan.sentinel=TRUE
+       WHERE a.sentinel_enabled=TRUE
+       ORDER BY a.sentinel_last_checked_at ASC NULLS FIRST, a.created_at ASC, a.id ASC
+       LIMIT $1 FOR UPDATE OF a SKIP LOCKED
      )
      UPDATE agents a SET sentinel_last_checked_at=NOW()
      FROM due_targets d
@@ -3021,7 +3047,20 @@ export async function checkSentinel({ workspaceId, agentId }) {
   const current = await getSentinelSnapshot({ workspaceId, agentId });
   if (!current) return null;
 
+  let sentinelEntitled = false;
   await withTransaction(async (client) => {
+    const entitlementResult = await client.query(
+      `SELECT 1
+       FROM workspace_subscriptions ws
+       JOIN subscription_plans sentinel_plan ON sentinel_plan.id = CASE
+         WHEN ws.status IN ('trialing', 'active', 'canceled') AND ws.current_period_end > NOW() THEN ws.plan_id
+         ELSE 'free'
+       END AND sentinel_plan.sentinel=TRUE
+       WHERE ws.workspace_id=$1`,
+      [workspaceId],
+    );
+    if (!entitlementResult.rowCount || !current.agent.sentinelEnabled) return;
+    sentinelEntitled = true;
     const baselineResult = await client.query(
       `SELECT * FROM sentinel_baselines
        WHERE workspace_id=$1 AND agent_id=$2 AND superseded_at IS NULL
@@ -3029,7 +3068,6 @@ export async function checkSentinel({ workspaceId, agentId }) {
       [workspaceId, agentId],
     );
     const baseline = mapSentinelBaseline(baselineResult.rows[0]);
-    if (!current.agent.sentinelEnabled) return;
     const drift = baseline
       ? compareSentinelSnapshots(baseline.snapshot, current.snapshot)
       : { drifted: false, severity: "none", changes: [] };
@@ -3083,7 +3121,7 @@ export async function checkSentinel({ workspaceId, agentId }) {
   });
 
   const state = await getSentinelAgentState({ workspaceId, agentId });
-  if (!state || !current.agent.sentinelEnabled) return state;
+  if (!state || !current.agent.sentinelEnabled || !sentinelEntitled) return state;
 
   if (!state.baseline || !state.changes.length) {
     await resolveIncidentsForAgent({ workspaceId, agentId, eventType: "sentinel_drift" });
@@ -3180,15 +3218,16 @@ export async function disableRuntimeFirewall({ workspaceId, agentId }) {
   return Boolean(result.rowCount);
 }
 
-export async function listRuntimeEvents({ workspaceId, agentId, limit = 20 }) {
+export async function listRuntimeEvents({ workspaceId, agentId, limit = 20, historyDays = 7 }) {
   const result = await query(
     `SELECT id, request_id, decision, tool_name, reasons, latency_ms,
             outcome, error_code, failure_stage, trace_id, trace_spans, created_at
      FROM runtime_events
      WHERE workspace_id=$1 AND agent_id=$2
+       AND created_at >= NOW() - (GREATEST(1, $3)::double precision * INTERVAL '1 day')
      ORDER BY created_at DESC
-     LIMIT $3`,
-    [workspaceId, agentId, limit],
+     LIMIT $4`,
+    [workspaceId, agentId, historyDays, limit],
   );
   return result.rows.map((row) => ({
     id: row.id,
@@ -3206,14 +3245,15 @@ export async function listRuntimeEvents({ workspaceId, agentId, limit = 20 }) {
   }));
 }
 
-export async function getRuntimeEvent({ workspaceId, agentId, requestId }) {
+export async function getRuntimeEvent({ workspaceId, agentId, requestId, historyDays = 7 }) {
   const result = await query(
     `SELECT id, request_id, decision, tool_name, reasons, latency_ms,
             outcome, error_code, failure_stage, trace_id, trace_spans, created_at
      FROM runtime_events
      WHERE workspace_id=$1 AND agent_id=$2 AND request_id=$3
+       AND created_at >= NOW() - (GREATEST(1, $4)::double precision * INTERVAL '1 day')
      LIMIT 1`,
-    [workspaceId, agentId, requestId],
+    [workspaceId, agentId, requestId, historyDays],
   );
   const row = result.rows[0];
   if (!row) return null;
@@ -3500,11 +3540,13 @@ export async function saveRuntimeVerification({ id, workspaceId, agentId, status
   return mapRuntimeVerification(saved.rows[0]);
 }
 
-export async function getRuntimeVerification({ workspaceId, agentId }) {
+export async function getRuntimeVerification({ workspaceId, agentId, historyDays = 7 }) {
   const result = await query(
     `SELECT id, workspace_id, agent_id, status, fingerprint, result, created_at
-     FROM runtime_verification_runs WHERE workspace_id=$1 AND agent_id=$2`,
-    [workspaceId, agentId],
+     FROM runtime_verification_runs
+     WHERE workspace_id=$1 AND agent_id=$2
+       AND created_at >= NOW() - (GREATEST(1, $3)::double precision * INTERVAL '1 day')`,
+    [workspaceId, agentId, historyDays],
   );
   return mapRuntimeVerification(result.rows[0]);
 }
@@ -3519,7 +3561,7 @@ export async function createAgent({ workspaceId, agent, toolIds }) {
       );
     }
     const agentCount = await client.query(
-      "SELECT COUNT(*)::int AS count FROM agents WHERE workspace_id=$1",
+      "SELECT COUNT(*)::int AS count FROM agents WHERE workspace_id=$1 AND mode IS DISTINCT FROM 'demo_simulator'",
       [workspaceId],
     );
     const addonBalances = await getAddonBalances(client, workspaceId);
@@ -3575,30 +3617,40 @@ export async function createAgent({ workspaceId, agent, toolIds }) {
 }
 
 export async function createQuickstartDemo({ workspaceId }) {
-  const existing = await query(
-    `SELECT id FROM agents
-     WHERE workspace_id=$1 AND mode='demo_simulator'
-     ORDER BY created_at ASC LIMIT 1`,
-    [workspaceId],
-  );
-  const agent = existing.rows[0]
-    ? await getAgent(existing.rows[0].id, workspaceId)
-    : await createAgent({
-      workspaceId,
-      agent: {
-        id: `agent-demo-${randomUUID()}`,
-        name: "AgentGuard Security Demo",
-        description: "An isolated synthetic agent for the 15-minute security proof.",
-        environment: "Sandbox",
-        provider: "AgentGuard Safe Simulator",
-        model: "agentguard-demo-v1",
-        mode: "demo_simulator",
-        status: "connected",
-        endpoint: null,
-        encryptedApiKey: null,
-      },
-      toolIds: ["get_order", "issue_refund"],
-    });
+  let reusedAgent = false;
+  const agentId = await withTransaction(async (client) => {
+    const billing = await lockBillingState(client, workspaceId);
+    if (!billing.active) {
+      throw billingError("SUBSCRIPTION_REQUIRED", "Your subscription is not active. Renew it before starting the Quickstart demo.");
+    }
+    const existing = await client.query(
+      `SELECT id FROM agents
+       WHERE workspace_id=$1 AND mode='demo_simulator'
+       ORDER BY created_at ASC LIMIT 1`,
+      [workspaceId],
+    );
+    if (existing.rows[0]) {
+      reusedAgent = true;
+      return existing.rows[0].id;
+    }
+
+    const id = `agent-demo-${randomUUID()}`;
+    await client.query(
+      `INSERT INTO agents
+         (id, workspace_id, name, description, environment, provider, model, mode, status, endpoint_url, encrypted_api_key)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,NULL)`,
+      [id, workspaceId, "AgentGuard Security Demo", "Isolated Quickstart simulator. It does not use a protected Agent slot.", "Sandbox", "AgentGuard Safe Simulator", "agentguard-demo-v1", "demo_simulator", "connected"],
+    );
+    for (const toolId of ["get_order", "issue_refund"]) {
+      await client.query(
+        "INSERT INTO agent_tools (id, agent_id, tool_id) VALUES ($1, $2, $3)",
+        [`agent-tool-${randomUUID()}`, id, toolId],
+      );
+    }
+    return id;
+  });
+  const agent = await getAgent(agentId, workspaceId);
+  if (!agent) throw new Error("The Quickstart demo agent could not be loaded after creation.");
 
   const active = await query(
     `SELECT id FROM scans
@@ -3615,7 +3667,7 @@ export async function createQuickstartDemo({ workspaceId }) {
       trigger: "Quickstart demo",
       scenarioIds: quickstartScenarioIds,
     });
-  return { agent, scan, reused: Boolean(existing.rows[0] || active.rows[0]) };
+  return { agent, scan, reused: Boolean(reusedAgent || active.rows[0]) };
 }
 
 export async function updateAgent({ workspaceId, agentId, agent, toolIds, apiKeyMode = "keep" }) {
@@ -3919,7 +3971,14 @@ export async function listScans(workspaceId, limit = 50) {
   const result = await query(
     `SELECT s.*, a.name AS agent_name FROM scans s
      JOIN agents a ON a.id = s.agent_id
-     WHERE s.workspace_id = $1 ORDER BY s.created_at DESC LIMIT $2`,
+     JOIN workspace_subscriptions ws ON ws.workspace_id=s.workspace_id
+     JOIN subscription_plans retention_plan ON retention_plan.id = CASE
+       WHEN ws.status IN ('trialing', 'active', 'canceled') AND ws.current_period_end > NOW() THEN ws.plan_id
+       ELSE 'free'
+     END
+     WHERE s.workspace_id = $1
+       AND s.created_at >= NOW() - (GREATEST(1, retention_plan.history_days)::double precision * INTERVAL '1 day')
+     ORDER BY s.created_at DESC LIMIT $2`,
     [workspaceId, limit],
   );
   return result.rows.map(mapScan);
@@ -3929,56 +3988,128 @@ export async function purgeExpiredEvidence(limit = 500) {
   return withTransaction(async (client) => {
     const startedAt = new Date();
     const startedClock = process.hrtime.bigint();
+    const batchSize = Math.min(5000, Math.max(1, Number(limit) || 500));
     const candidates = await client.query(
-      `SELECT s.id
+      `SELECT s.id, s.workspace_id
        FROM scans s
        JOIN workspace_subscriptions ws ON ws.workspace_id=s.workspace_id
-       JOIN subscription_plans p ON p.id=ws.plan_id
+       JOIN subscription_plans retention_plan ON retention_plan.id = CASE
+         WHEN ws.status IN ('trialing', 'active', 'canceled') AND ws.current_period_end > NOW() THEN ws.plan_id
+         ELSE 'free'
+       END
        WHERE s.status IN ('completed', 'failed')
-         AND s.created_at < NOW() - (GREATEST(1, p.history_days)::double precision * INTERVAL '1 day')
+         AND s.created_at < NOW() - (GREATEST(1, retention_plan.history_days)::double precision * INTERVAL '1 day')
        ORDER BY s.created_at ASC
        LIMIT $1
        FOR UPDATE OF s SKIP LOCKED`,
-      [Math.min(5000, Math.max(1, Number(limit) || 500))],
+      [batchSize],
     );
-    if (!candidates.rowCount) {
-      const finishedAt = new Date();
-      const durationMs = Number(process.hrtime.bigint() - startedClock) / 1e6;
-      const run = await client.query(
-        `INSERT INTO evidence_retention_runs
-           (id, started_at, finished_at, candidates, deleted_scans, duration_ms, status)
-         VALUES ($1,$2,$3,0,0,$4,'completed')
-         RETURNING id`,
-        [`retention-${randomUUID()}`, startedAt, finishedAt, Math.round(durationMs)],
-      );
-      return { deletedScans: 0, candidates: 0, durationMs: Math.round(durationMs), retentionRunId: run.rows[0]?.id ?? null };
-    }
-    const ids = candidates.rows.map((row) => row.id);
-    const deleted = await client.query(
-      "DELETE FROM scans WHERE id = ANY($1::text[]) RETURNING id",
-      [ids],
+    const scanIds = candidates.rows.map((row) => row.id);
+    const deletedScans = await client.query(
+      "DELETE FROM scans WHERE id = ANY($1::text[]) RETURNING id, workspace_id",
+      [scanIds],
     );
+
+    const runtimeVerificationCandidates = await client.query(
+      `SELECT verification.id, verification.workspace_id
+       FROM runtime_verification_runs verification
+       JOIN workspace_subscriptions ws ON ws.workspace_id=verification.workspace_id
+       JOIN subscription_plans retention_plan ON retention_plan.id = CASE
+         WHEN ws.status IN ('trialing', 'active', 'canceled') AND ws.current_period_end > NOW() THEN ws.plan_id
+         ELSE 'free'
+       END
+       WHERE verification.created_at < NOW() - (GREATEST(1, retention_plan.history_days)::double precision * INTERVAL '1 day')
+       ORDER BY verification.created_at ASC
+       LIMIT $1
+       FOR UPDATE OF verification SKIP LOCKED`,
+      [batchSize],
+    );
+    const verificationIds = runtimeVerificationCandidates.rows.map((row) => row.id);
+    const deletedRuntimeVerificationRuns = await client.query(
+      "DELETE FROM runtime_verification_runs WHERE id = ANY($1::text[]) RETURNING id, workspace_id",
+      [verificationIds],
+    );
+
+    const runtimeEventCandidates = await client.query(
+      `SELECT re.id, re.workspace_id
+       FROM runtime_events re
+       JOIN workspace_subscriptions ws ON ws.workspace_id=re.workspace_id
+       JOIN subscription_plans retention_plan ON retention_plan.id = CASE
+         WHEN ws.status IN ('trialing', 'active', 'canceled') AND ws.current_period_end > NOW() THEN ws.plan_id
+         ELSE 'free'
+       END
+       WHERE re.created_at < NOW() - (GREATEST(1, retention_plan.history_days)::double precision * INTERVAL '1 day')
+       ORDER BY re.created_at ASC
+       LIMIT $1
+       FOR UPDATE OF re SKIP LOCKED`,
+      [batchSize],
+    );
+    const runtimeEventIds = runtimeEventCandidates.rows.map((row) => row.id);
+    const deletedRuntimeEvents = await client.query(
+      "DELETE FROM runtime_events WHERE id = ANY($1::text[]) RETURNING id, workspace_id",
+      [runtimeEventIds],
+    );
+
     const finishedAt = new Date();
     const durationMs = Number(process.hrtime.bigint() - startedClock) / 1e6;
-    const run = await client.query(
-      `INSERT INTO evidence_retention_runs
-         (id, started_at, finished_at, candidates, deleted_scans, duration_ms, status)
-       VALUES ($1,$2,$3,$4,$5,$6,'completed')
-       RETURNING id`,
-      [
-        `retention-${randomUUID()}`,
-        startedAt,
-        finishedAt,
-        candidates.rowCount,
-        deleted.rowCount,
-        Math.round(durationMs),
-      ],
-    );
+    const byWorkspace = new Map();
+    const countRows = (rows, key) => {
+      for (const row of rows) {
+        if (!byWorkspace.has(row.workspace_id)) {
+          byWorkspace.set(row.workspace_id, {
+            candidates: 0,
+            deletedScans: 0,
+            runtimeVerificationCandidates: 0,
+            deletedRuntimeVerificationRuns: 0,
+            runtimeEventCandidates: 0,
+            deletedRuntimeEvents: 0,
+          });
+        }
+        byWorkspace.get(row.workspace_id)[key] += 1;
+      }
+    };
+    countRows(candidates.rows, "candidates");
+    countRows(deletedScans.rows, "deletedScans");
+    countRows(runtimeVerificationCandidates.rows, "runtimeVerificationCandidates");
+    countRows(deletedRuntimeVerificationRuns.rows, "deletedRuntimeVerificationRuns");
+    countRows(runtimeEventCandidates.rows, "runtimeEventCandidates");
+    countRows(deletedRuntimeEvents.rows, "deletedRuntimeEvents");
+    const retentionRuns = [...byWorkspace.entries()].map(([workspaceId, metrics]) => ({
+      id: `retention-${randomUUID()}`,
+      workspace_id: workspaceId,
+      started_at: startedAt.toISOString(),
+      finished_at: finishedAt.toISOString(),
+      ...metrics,
+      duration_ms: Math.round(durationMs),
+    }));
+    if (retentionRuns.length) {
+      await client.query(
+        `INSERT INTO evidence_retention_runs
+           (id, workspace_id, started_at, finished_at, candidates, deleted_scans,
+            runtime_verification_candidates, deleted_runtime_verification_runs,
+            runtime_event_candidates, deleted_runtime_events, duration_ms, status)
+         SELECT run.id, run.workspace_id, run.started_at, run.finished_at,
+                run.candidates, run.deleted_scans, run.runtime_verification_candidates,
+                run.deleted_runtime_verification_runs, run.runtime_event_candidates,
+                run.deleted_runtime_events, run.duration_ms, 'completed'
+         FROM jsonb_to_recordset($1::jsonb) AS run(
+           id TEXT, workspace_id TEXT, started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ,
+           candidates INTEGER, deleted_scans INTEGER,
+           runtime_verification_candidates INTEGER, deleted_runtime_verification_runs INTEGER,
+           runtime_event_candidates INTEGER, deleted_runtime_events INTEGER, duration_ms INTEGER
+         )`,
+        [JSON.stringify(retentionRuns)],
+      );
+    }
     return {
-      deletedScans: deleted.rowCount,
+      deletedScans: deletedScans.rowCount,
       candidates: candidates.rowCount,
+      runtimeVerificationCandidates: runtimeVerificationCandidates.rowCount,
+      deletedRuntimeVerificationRuns: deletedRuntimeVerificationRuns.rowCount,
+      runtimeEventCandidates: runtimeEventCandidates.rowCount,
+      deletedRuntimeEvents: deletedRuntimeEvents.rowCount,
       durationMs: Math.round(durationMs),
-      retentionRunId: run.rows[0]?.id ?? null,
+      retentionRunIds: retentionRuns.map((run) => run.id),
     };
   });
 }
@@ -3986,7 +4117,13 @@ export async function purgeExpiredEvidence(limit = 500) {
 export async function getScan(scanId, workspaceId) {
   const result = await query(
     `SELECT s.*, a.name AS agent_name FROM scans s JOIN agents a ON a.id = s.agent_id
-     WHERE s.id = $1 AND s.workspace_id = $2`,
+     JOIN workspace_subscriptions ws ON ws.workspace_id=s.workspace_id
+     JOIN subscription_plans retention_plan ON retention_plan.id = CASE
+       WHEN ws.status IN ('trialing', 'active', 'canceled') AND ws.current_period_end > NOW() THEN ws.plan_id
+       ELSE 'free'
+     END
+     WHERE s.id = $1 AND s.workspace_id = $2
+       AND s.created_at >= NOW() - (GREATEST(1, retention_plan.history_days)::double precision * INTERVAL '1 day')`,
     [scanId, workspaceId],
   );
   const scan = mapScan(result.rows[0]);
@@ -4281,8 +4418,8 @@ export async function isFirstCompletedScan({ scanId, workspaceId }) {
      FROM scans current_scan
      WHERE current_scan.workspace_id=$1
        AND current_scan.status='completed'
-       AND current_scan.created_at <= (
-         SELECT created_at FROM scans WHERE id=$2 AND workspace_id=$1
+       AND (current_scan.created_at, current_scan.id) <= (
+         SELECT created_at, id FROM scans WHERE id=$2 AND workspace_id=$1
        )`,
     [workspaceId, scanId],
   );
@@ -4607,15 +4744,21 @@ export async function overview(workspaceId) {
                latest.inconclusive, latest.safety_status,
                COALESCE(NULLIF(jsonb_array_length(latest.scenario_ids), 0), latest.passed + latest.failed) AS scenario_count
              FROM agents a
+             JOIN workspace_subscriptions ws ON ws.workspace_id=a.workspace_id
+             JOIN subscription_plans retention_plan ON retention_plan.id = CASE
+               WHEN ws.status IN ('trialing', 'active', 'canceled') AND ws.current_period_end > NOW() THEN ws.plan_id
+               ELSE 'free'
+             END
              JOIN LATERAL (
                SELECT s.score, s.failed, s.passed, s.blocked, s.inconclusive,
                       s.safety_status, s.scenario_ids
                FROM scans s
                WHERE s.workspace_id=a.workspace_id AND s.agent_id=a.id AND s.status='completed'
+                 AND s.created_at >= NOW() - (GREATEST(1, retention_plan.history_days)::double precision * INTERVAL '1 day')
                ORDER BY s.created_at DESC
                LIMIT 1
              ) latest ON TRUE
-             WHERE a.workspace_id=$1
+             WHERE a.workspace_id=$1 AND a.mode IS DISTINCT FROM 'demo_simulator'
            )
            SELECT COALESCE(ROUND(AVG(CASE WHEN safety_status <> 'safe' THEN 0 ELSE score END))::int, 0) AS security_score,
              COALESCE(SUM(failed), 0)::int AS open_findings,
@@ -4627,10 +4770,17 @@ export async function overview(workspaceId) {
              COALESCE(SUM(scenario_count), 0)::int AS tested_scenarios,
              COALESCE(COUNT(*) FILTER (WHERE scenario_count >= $2), 0)::int AS full_suite_agents,
               (SELECT COUNT(*)::int
-               FROM scans
-               WHERE workspace_id=$1 AND status='completed' AND created_at >= DATE_TRUNC('month', NOW())) AS scans_this_month,
+               FROM scans s
+               JOIN workspace_subscriptions ws ON ws.workspace_id=s.workspace_id
+               JOIN subscription_plans metric_plan ON metric_plan.id = CASE
+                 WHEN ws.status IN ('trialing', 'active', 'canceled') AND ws.current_period_end > NOW() THEN ws.plan_id
+                 ELSE 'free'
+               END
+               WHERE s.workspace_id=$1 AND s.status='completed'
+                 AND s.created_at >= DATE_TRUNC('month', NOW())
+                 AND s.created_at >= NOW() - (GREATEST(1, metric_plan.history_days)::double precision * INTERVAL '1 day')) AS scans_this_month,
              COUNT(*)::int AS agents_scanned,
-             (SELECT COUNT(*)::int FROM agents WHERE workspace_id=$1) AS total_agents,
+             (SELECT COUNT(*)::int FROM agents WHERE workspace_id=$1 AND mode IS DISTINCT FROM 'demo_simulator') AS total_agents,
               (SELECT COALESCE(SUM(blocked), 0)::int
                FROM scans
                WHERE workspace_id=$1 AND status='completed' AND created_at >= NOW() - INTERVAL '7 days') AS blocked_last_7_days

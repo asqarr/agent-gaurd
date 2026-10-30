@@ -303,9 +303,11 @@ test("advanced plans scale security depth and operational entitlements", () => {
 
   assert.equal(scenariosForPlan(explorer).length, 5);
   assert.equal(scanCreditsForScenarios(scenariosForPlan(explorer)), 9);
-  assert.equal(explorer.monthlyScanCredits, 20);
+  assert.equal(explorer.monthlyScanCredits, 9);
   assert.equal(explorer.scanCreditMode, "one_time");
   assert.equal(scenariosForPlan(builder).length, 12);
+  assert.equal(builder.securityContracts, true);
+  assert.equal(builder.aiRemediationCopilot, false);
   assert.equal(builder.monthlyScanCredits, 200);
   assert.equal(builder.maxAgents, 2);
   assert.equal(builder.autopilot, false);
@@ -314,19 +316,21 @@ test("advanced plans scale security depth and operational entitlements", () => {
   assert.equal(builder.exportReports, true);
   assert.equal(builder.alertWebhooks, false);
   assert.equal(pro.alertWebhooks, true);
+  assert.equal(pro.securityContracts, true);
+  assert.equal(pro.aiRemediationCopilot, true);
   assert.equal(pro.maxWebhooks, 3);
   assert.equal(pro.monthlyScanCredits, 1000);
   assert.equal(agency.maxAgents, 15);
   assert.equal(agency.monthlyScanCredits, 4000);
-  assert.equal(agency.whiteLabelReports, true);
-  assert.equal(agency.multiClientManagement, true);
+  assert.equal(agency.whiteLabelReports, false);
+  assert.equal(agency.multiClientManagement, false);
   assert.equal(agency.maxWebhooks, 25);
   assert.ok(pro.priceUsdCents < agency.priceUsdCents);
 });
 
 test("scan capacity messaging has an explicit full-suite baseline", () => {
   assert.equal(fullScanCredits, 30);
-  assert.equal(Math.floor(billingPlans[0].monthlyScanCredits / scanCreditsForScenarios(scenariosForPlan(billingPlans[0]))), 2);
+  assert.equal(Math.floor(billingPlans[0].monthlyScanCredits / scanCreditsForScenarios(scenariosForPlan(billingPlans[0]))), 1);
   assert.equal(Math.floor(billingPlans[1].monthlyScanCredits / fullScanCredits), 6);
   assert.equal(Math.floor(billingPlans[2].monthlyScanCredits / fullScanCredits), 33);
   assert.equal(Math.floor(billingPlans[3].monthlyScanCredits / fullScanCredits), 133);

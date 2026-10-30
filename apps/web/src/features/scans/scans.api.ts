@@ -47,7 +47,10 @@ export async function waitForScan(
 }
 
 export async function getScan(scanId: string): Promise<Scan> {
-  return (await request(`/api/scans/${scanId}`)).json().then((body) => body.scan);
+  return (await request(`/api/scans/${scanId}`)).json().then((body) => ({
+    ...body.scan,
+    reportAccess: body.reportAccess,
+  }));
 }
 
 export async function applyScanPolicyFix(

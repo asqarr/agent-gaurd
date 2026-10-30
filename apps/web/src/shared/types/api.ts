@@ -356,8 +356,11 @@ export type BillingPlan = {
   historyDays: number;
   seatLimit: number;
   runtimeFirewall: boolean;
+  enforcementVerification: boolean;
   scenarioLimit: number;
   scanCreditsPerScan: number;
+  securityContracts: boolean;
+  aiRemediationCopilot: boolean;
   autopilot: boolean;
   sentinel: boolean;
   incidentCenter: boolean;
@@ -417,8 +420,11 @@ export type BillingState = {
     active: boolean;
     maxAgents: number;
     runtimeFirewall: boolean;
+    enforcementVerification: boolean;
     scenarioLimit: number;
     fullScenarioSuite: boolean;
+    securityContracts: boolean;
+    aiRemediationCopilot: boolean;
     autopilot: boolean;
     sentinel: boolean;
     incidentCenter: boolean;
@@ -485,6 +491,10 @@ export type BillingUsageMetrics = {
     lastRunAt: string;
     candidates: number;
     deletedScans: number;
+    runtimeVerificationCandidates: number;
+    runtimeEventCandidates: number;
+    deletedRuntimeEvents: number;
+    deletedRuntimeVerificationRuns: number;
     durationMs: number;
     status: "completed" | "failed";
   } | null;
@@ -788,6 +798,7 @@ export type Scan = {
   startedAt?: string | null;
   finishedAt?: string | null;
   trigger: string;
+  reportAccess?: { available: boolean; preview: boolean };
   executionMode?: "simulation" | "local_simulation" | "safe_demo_simulation" | "customer_endpoint_simulation" | "mixed" | string;
   safetyStatus?: "safe" | "unknown_endpoint" | "unsafe" | string;
   safetyWarning?: string | null;

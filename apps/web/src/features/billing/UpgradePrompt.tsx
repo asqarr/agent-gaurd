@@ -12,8 +12,23 @@ const planNames: Record<string, string> = {
 const entitlementCopy: Record<string, { label: string; requiredPlan: string; detail: string }> = {
   runtimeFirewall: {
     label: "Runtime Firewall",
+    requiredPlan: "Explorer · 100 decisions/month",
+    detail: "Start a one-agent live pilot. Builder raises the included Runtime allowance to 10,000 decisions/month.",
+  },
+  securityContracts: {
+    label: "Security Contracts",
     requiredPlan: "Builder",
-    detail: "Block unsafe tool calls before they reach a customer system.",
+    detail: "Version tool boundaries and replay attack paths to verify that changes do not weaken the contract.",
+  },
+  enforcementVerification: {
+    label: "Enforcement Verification",
+    requiredPlan: "Builder",
+    detail: "Run isolated policy, SDK, replay, and outage checks and retain a current proof for your Runtime Firewall.",
+  },
+  aiRemediationCopilot: {
+    label: "AI Remediation Copilot",
+    requiredPlan: "Pro",
+    detail: "Generate a structured remediation plan from minimized scan evidence with your configured AI provider.",
   },
   autopilot: {
     label: "Autopilot",
@@ -113,10 +128,10 @@ function upgradeBenefits(requiredPlan: string) {
     benefits.unshift("Evaluate the complete 12-scenario red-team suite");
   }
   if (["Pro", "Agency"].includes(requiredPlan)) {
-    benefits.push("Monitor drift and operational incidents across the agent fleet");
+    benefits.push("Generate AI remediation plans and monitor drift across the agent fleet");
   }
   if (requiredPlan === "Agency") {
-    benefits.push("Run a multi-client program with white-label evidence");
+    benefits.push("Scale to 15 agents, 500,000 Runtime Decisions, and 25 signed alert routes");
   }
   return benefits;
 }

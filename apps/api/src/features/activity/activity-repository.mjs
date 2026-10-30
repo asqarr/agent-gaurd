@@ -44,35 +44,42 @@ export async function appendWorkspaceActivitySafely(input) {
   }
 }
 
-export async function listWorkspaceActivity({ workspaceId, beforeId = null, limit = 50 }) {
+export async function listWorkspaceActivity({ workspaceId, beforeId = null, limit = 50, eventTypes = null, historyDays = null }) {
   const result = await query(
     `SELECT ${selectColumns}
      FROM workspace_activity_events
      WHERE workspace_id=$1 AND ($2::bigint IS NULL OR stream_id < $2::bigint)
+       AND ($4::text[] IS NULL OR event_type=ANY($4::text[]))
+       AND ($5::integer IS NULL OR created_at >= NOW() - (GREATEST(1, $5)::double precision * INTERVAL '1 day'))
      ORDER BY stream_id DESC
      LIMIT $3`,
-    [workspaceId, beforeId, limit],
+    [workspaceId, beforeId, limit, eventTypes, historyDays],
   );
   return result.rows.map(mapWorkspaceActivityRow);
 }
 
-export async function listWorkspaceActivityAfter({ workspaceId, afterId = "0", limit = 500 }) {
+export async function listWorkspaceActivityAfter({ workspaceId, afterId = "0", limit = 500, eventTypes = null, historyDays = null }) {
   const result = await query(
     `SELECT ${selectColumns}
      FROM workspace_activity_events
      WHERE workspace_id=$1 AND stream_id > $2::bigint
+       AND ($4::text[] IS NULL OR event_type=ANY($4::text[]))
+       AND ($5::integer IS NULL OR created_at >= NOW() - (GREATEST(1, $5)::double precision * INTERVAL '1 day'))
      ORDER BY stream_id ASC
      LIMIT $3`,
-    [workspaceId, afterId, limit],
+    [workspaceId, afterId, limit, eventTypes, historyDays],
   );
   return result.rows.map(mapWorkspaceActivityRow);
 }
 
-export async function getWorkspaceActivityBounds({ workspaceId }) {
+export async function getWorkspaceActivityBounds({ workspaceId, eventTypes = null, historyDays = null }) {
   const result = await query(
     `SELECT MIN(stream_id)::text AS oldest_id, MAX(stream_id)::text AS newest_id
-     FROM workspace_activity_events WHERE workspace_id=$1`,
-    [workspaceId],
+     FROM workspace_activity_events
+     WHERE workspace_id=$1
+       AND ($2::text[] IS NULL OR event_type=ANY($2::text[]))
+       AND ($3::integer IS NULL OR created_at >= NOW() - (GREATEST(1, $3)::double precision * INTERVAL '1 day'))`,
+    [workspaceId, eventTypes, historyDays],
   );
   return {
     oldestId: result.rows[0]?.oldest_id ?? null,

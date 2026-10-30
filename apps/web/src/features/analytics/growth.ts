@@ -7,7 +7,7 @@ export type PublicGrowthEvent =
 
 type GrowthProperties = {
   page?: "home" | "attack_lab" | "security_guide" | "prompt_injection_guide" | "app";
-  scenarioId?: "refund_policy" | "argument_tampering" | "approval_replay";
+  scenarioId?: "refund_policy" | "argument_tampering" | "approval_replay" | "injection_tool_chain" | "tenant_exfiltration" | "context_replay_burst";
   utmSource?: string;
   utmMedium?: string;
   utmCampaign?: string;

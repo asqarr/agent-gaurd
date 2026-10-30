@@ -22,7 +22,14 @@ const clientEvents = new Set([
   "attack_lab.challenge_run",
   "auth.signup_started",
 ]);
-const scenarios = new Set(["refund_policy", "argument_tampering", "approval_replay"]);
+const scenarios = new Set([
+  "refund_policy",
+  "argument_tampering",
+  "approval_replay",
+  "injection_tool_chain",
+  "tenant_exfiltration",
+  "context_replay_burst",
+]);
 const pages = new Set(["home", "attack_lab", "security_guide", "prompt_injection_guide", "app"]);
 const publicPages = new Set(["home", "attack_lab", "security_guide", "prompt_injection_guide"]);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

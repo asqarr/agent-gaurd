@@ -229,7 +229,11 @@ async function handleAddonCheckout(req, res, next) {
     if (["security_audit", "support"].includes(addon.kind) && !serviceAcknowledged) return res.status(400).json({ error: "Review and accept the service scope before opening payment.", code: "SERVICE_TERMS_REQUIRED" });
     if (addon.kind === "security_audit") {
       if (!agentId) return res.status(400).json({ error: "An Agent is required for a Security Audit." });
-      if (!await repository.getAgent(agentId, workspace)) return res.status(404).json({ error: "The selected Agent was not found." });
+      const targetAgent = await repository.getAgent(agentId, workspace);
+      if (!targetAgent) return res.status(404).json({ error: "The selected Agent was not found." });
+      if (targetAgent.mode === "demo_simulator") {
+        return res.status(400).json({ error: "The synthetic Quickstart simulator cannot be used as a Security Audit target. Select a connected customer Agent." });
+      }
     }
     let checkout = await repository.getCheckoutSessionByIdempotency({ workspaceId: workspace, idempotencyKey: key });
     if (checkout && checkout.addonId !== addonId) return res.status(409).json({ error: "This Idempotency-Key is already linked to another add-on." });

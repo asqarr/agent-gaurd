@@ -22,7 +22,8 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
   const router = express.Router();
   router.get("/attack-paths", async (req, res, next) => {
     try {
-      const billing = await repository.getBillingState(req.auth.workspaceId);
+      const billing = await requireEntitlement(req, res, "securityContracts", "Versioned Security Contracts and attack-path replay require Builder or a higher plan.");
+      if (!billing) return;
       const entitledIds = new Set(scenarios.slice(0, billing.entitlements.scenarioLimit).map((scenario) => scenario.id));
       res.json({
         paths: attackPaths.map((path) => ({
@@ -42,6 +43,7 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
 
   router.post("/agents/:agentId/attack-paths/:pathId/replay", scanRateLimit, async (req, res, next) => {
     try {
+      if (!(await requireEntitlement(req, res, "securityContracts", "Versioned Security Contracts and attack-path replay require Builder or a higher plan."))) return;
       const path = attackPaths.find((item) => item.id === req.params.pathId);
       if (!path) return res.status(404).json({ error: "Attack path not found." });
       const agent = await repository.getAgent(req.params.agentId, req.auth.workspaceId);
@@ -136,9 +138,26 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
     try {
       const scan = await repository.getScan(req.params.scanId, req.auth.workspaceId);
       if (!scan) return res.status(404).json({ error: "Scan not found." });
+      let reportAccess = { available: false, preview: false };
+      if (scan.status === "completed") {
+        const billing = await repository.getBillingState(req.auth.workspaceId);
+        if (billing.entitlements.exportReports) {
+          reportAccess = { available: true, preview: false };
+        } else if (billing.plan.id === "free") {
+          const agent = await repository.getAgent(scan.agentId, req.auth.workspaceId);
+          const isQuickstartPreview = agent?.mode === "demo_simulator" && scan.trigger === "Quickstart demo";
+          const isFirstFreePreview = await repository.isFirstCompletedScan({
+            scanId: scan.id,
+            workspaceId: req.auth.workspaceId,
+          });
+          const preview = isQuickstartPreview || isFirstFreePreview;
+          reportAccess = { available: preview, preview };
+        }
+      }
       res.json({
         scan,
         policy: scan.policySnapshot?.effective ?? (await repository.getPolicy(req.auth.workspaceId)) ?? policy,
+        reportAccess,
       });
     } catch (error) {
       next(error);
@@ -190,6 +209,7 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
 
   router.post("/scans/:scanId/copilot/:scenarioId", copilotRateLimit, async (req, res, next) => {
     try {
+      if (!(await requireEntitlement(req, res, "aiRemediationCopilot", "AI Remediation Copilot requires Pro or Agency."))) return;
       const scan = await repository.getScan(req.params.scanId, req.auth.workspaceId);
       if (!scan) return res.status(404).json({ error: "Scan not found." });
       if (scan.status !== "completed") {
@@ -338,8 +358,10 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
       const scan = await repository.getScan(req.params.scanId, req.auth.workspaceId);
       if (!scan) return res.status(404).json({ error: "Scan not found." });
       const agent = await repository.getAgent(scan.agentId, req.auth.workspaceId);
-      const isQuickstartPreview = agent?.mode === "demo_simulator" && scan.trigger === "Quickstart demo";
       const billing = await repository.getBillingState(req.auth.workspaceId);
+      const isQuickstartPreview = billing.plan.id === "free"
+        && agent?.mode === "demo_simulator"
+        && scan.trigger === "Quickstart demo";
       const isFirstFreePreview = billing.plan.id === "free"
         && scan.status === "completed"
         && await repository.isFirstCompletedScan({ scanId: scan.id, workspaceId: req.auth.workspaceId });
