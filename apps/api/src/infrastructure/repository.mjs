@@ -29,6 +29,7 @@ import { quickstartScenarioIds } from "../features/quickstart/domain.mjs";
 import { createIncidentNotification } from "../features/incidents/incident-repository.mjs";
 import { currentUsagePeriodStart, insertUsageMeasurement } from "../features/billing/usage-repository.mjs";
 import { buildRemediation, buildRemediationSummary } from "../features/reports/remediation.mjs";
+import { buildPolicyFixProposal } from "../features/scans/policy-fix.mjs";
 import { SCAN_CATALOG_VERSION } from "../features/scans/scan-verdict.mjs";
 import { appendWorkspaceActivitySafely } from "../features/activity/activity-repository.mjs";
 export { recordUsageMeasurement } from "../features/billing/usage-repository.mjs";
@@ -149,6 +150,13 @@ function mapScan(row) {
     catalogVersion: row.catalog_version ?? SCAN_CATALOG_VERSION,
     promptVersion: row.prompt_version ?? "prompt-v1",
     verdict: row.verdict ?? "pending",
+    remediationVerification: row.remediation_source_scan_id
+      ? {
+          sourceScanId: row.remediation_source_scan_id,
+          scenarioId: row.remediation_scenario_id,
+          policyVersionBefore: Number(row.remediation_policy_version_before),
+        }
+      : null,
     scenarioCount: Array.isArray(row.scenario_ids) ? row.scenario_ids.length : undefined,
     createdAt: row.created_at,
     startedAt: row.started_at,
@@ -4011,7 +4019,12 @@ export async function getScan(scanId, workspaceId) {
       reasons: row.reasons,
       call: row.tool_call,
     };
-    return { ...result, remediation: buildRemediation({ result, policy: workspacePolicy }) };
+    const policyFix = buildPolicyFixProposal({ scan, result, policy: scan.policySnapshot?.policy });
+    return {
+      ...result,
+      remediation: buildRemediation({ result, policy: workspacePolicy }),
+      ...(policyFix ? { policyFix } : {}),
+    };
   });
   const copilotGuidance = await query(
     `SELECT scenario_id, guidance, model_id, created_at, input_tokens, output_tokens,
@@ -4042,7 +4055,224 @@ export async function getScan(scanId, workspaceId) {
     [scanId],
   );
   scan.progress = progress.rows.map(mapScanProgress);
+  const verificationRows = await query(
+    `SELECT verification.id, verification.status, verification.verdict,
+            verification.policy_version, verification.remediation_scenario_id,
+            verification.remediation_policy_version_before,
+            verification.policy_snapshot,
+            verification.created_at, verification.finished_at,
+            result.status AS scenario_status, result.verdict AS scenario_verdict,
+            result.guard_decision, result.execution, result.execution_safety, result.reasons
+     FROM scans AS verification
+     LEFT JOIN scan_results AS result
+       ON result.scan_id=verification.id
+      AND result.scenario_id=verification.remediation_scenario_id
+     WHERE verification.workspace_id=$1
+       AND verification.remediation_source_scan_id=$2
+     ORDER BY verification.created_at DESC
+     LIMIT 20`,
+    [workspaceId, scanId],
+  );
+  scan.verificationRuns = verificationRows.rows.map((row) => ({
+    scanId: row.id,
+    status: row.status,
+    verdict: row.verdict,
+    scenarioId: row.remediation_scenario_id,
+    scenarioStatus: row.scenario_status,
+    scenarioVerdict: row.scenario_verdict,
+    guard: row.guard_decision ? { decision: row.guard_decision, execution: row.execution } : null,
+    executionSafety: row.execution_safety,
+    reasons: row.reasons ?? [],
+    policyVersionBefore: Number(row.remediation_policy_version_before),
+    policyVersionAfter: Number(row.policy_version),
+    policyAfter: row.policy_snapshot?.policy ?? null,
+    createdAt: row.created_at,
+    finishedAt: row.finished_at,
+  }));
   return scan;
+}
+
+function policyFixConflict(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+export async function applyPolicyFixFromScan({
+  workspaceId,
+  scanId,
+  scenarioId,
+  expectedPolicyVersion,
+  changedBy,
+}) {
+  return withTransaction(async (client) => {
+    // Keep the policy-before-scan lock order used by enqueueScan. A policy fix
+    // and its verification can then race without each transaction holding the
+    // row the other is waiting for.
+    const policyQuery = await client.query(
+      `SELECT id, name, version, max_amount, max_age_days, currency, enforcement
+       FROM policies
+       WHERE workspace_id=$1
+       ORDER BY created_at
+       LIMIT 1
+       FOR UPDATE`,
+      [workspaceId],
+    );
+    const policyRow = policyQuery.rows[0];
+    if (!policyRow) throw policyFixConflict("POLICY_FIX_NOT_APPLICABLE", "This workspace has no editable policy record.");
+
+    const scanResult = await client.query(
+      `SELECT id, workspace_id, agent_id, status, policy_version, policy_snapshot,
+              contract_version, safety_status, execution_mode
+       FROM scans
+       WHERE id=$1 AND workspace_id=$2
+       FOR UPDATE`,
+      [scanId, workspaceId],
+    );
+    const scanRow = scanResult.rows[0];
+    if (!scanRow) throw policyFixConflict("SCAN_NOT_FOUND", "Scan not found.");
+    if (scanRow.status !== "completed") {
+      throw policyFixConflict("POLICY_FIX_NOT_APPLICABLE", "Policy suggestions require a completed scan.");
+    }
+
+    const resultQuery = await client.query(
+      `SELECT scenario_id, status, verdict, guard_decision, execution,
+              execution_safety, execution_mode, tool_call
+       FROM scan_results
+       WHERE scan_id=$1 AND scenario_id=$2`,
+      [scanId, scenarioId],
+    );
+    const resultRow = resultQuery.rows[0];
+    if (!resultRow) throw policyFixConflict("SCENARIO_NOT_FOUND", "Scenario evidence not found in this scan.");
+
+    const expectedVersion = Number(expectedPolicyVersion);
+    const currentVersion = Number(policyRow.version);
+    const scannedVersion = Number(scanRow.policy_version);
+    if (
+      !Number.isInteger(expectedVersion) ||
+      expectedVersion < 1 ||
+      currentVersion !== expectedVersion ||
+      scannedVersion !== expectedVersion
+    ) {
+      throw policyFixConflict("POLICY_FIX_STALE", "The policy changed after this scan. Run a fresh scan before applying this suggestion.");
+    }
+
+    const contractVersionQuery = await client.query(
+      `SELECT version FROM agent_security_contracts
+       WHERE workspace_id=$1 AND agent_id=$2 AND status='active'
+       FOR UPDATE`,
+      [workspaceId, scanRow.agent_id],
+    );
+    if (Number(contractVersionQuery.rows[0]?.version ?? 0) !== Number(scanRow.contract_version ?? 0)) {
+      throw policyFixConflict("POLICY_FIX_STALE", "The agent security contract changed after this scan. Run a fresh scan before applying this suggestion.");
+    }
+
+    const scan = {
+      id: scanRow.id,
+      agentId: scanRow.agent_id,
+      status: scanRow.status,
+      policyVersion: scannedVersion,
+      policySnapshot: scanRow.policy_snapshot,
+      contractVersion: Number(scanRow.contract_version ?? 0),
+      safetyStatus: scanRow.safety_status,
+      executionMode: scanRow.execution_mode,
+    };
+    const snapshotPolicy = scan.policySnapshot?.policy;
+    if (
+      !snapshotPolicy ||
+      snapshotPolicy.id !== policyRow.id ||
+      Number(snapshotPolicy.version) !== expectedVersion ||
+      Number(snapshotPolicy.maxAmount) !== Number(policyRow.max_amount) ||
+      Number(snapshotPolicy.maxAgeDays) !== Number(policyRow.max_age_days) ||
+      snapshotPolicy.currency !== policyRow.currency ||
+      snapshotPolicy.enforcement !== policyRow.enforcement ||
+      snapshotPolicy.name !== policyRow.name
+    ) {
+      throw policyFixConflict("POLICY_FIX_STALE", "The saved scan policy snapshot no longer matches the editable workspace policy.");
+    }
+    const result = {
+      scenarioId: resultRow.scenario_id,
+      status: resultRow.status,
+      verdict: resultRow.verdict,
+      guard: resultRow.guard_decision
+        ? { decision: resultRow.guard_decision, execution: resultRow.execution }
+        : null,
+      executionSafety: resultRow.execution_safety,
+      executionMode: resultRow.execution_mode,
+      call: resultRow.tool_call,
+    };
+    const policy = {
+      id: policyRow.id,
+      name: policyRow.name,
+      version: currentVersion,
+      maxAmount: Number(policyRow.max_amount),
+      maxAgeDays: Number(policyRow.max_age_days),
+      currency: policyRow.currency,
+      enforcement: policyRow.enforcement,
+    };
+    const proposal = buildPolicyFixProposal({
+      scan,
+      result,
+      policy: scan.policySnapshot?.policy,
+    });
+    if (
+      !proposal ||
+      proposal.scenarioId !== scenarioId ||
+      proposal.policyId !== policy.id ||
+      proposal.expectedPolicyVersion !== expectedVersion
+    ) {
+      throw policyFixConflict("POLICY_FIX_NOT_APPLICABLE", "This evidence does not support a safe, narrower workspace policy change.");
+    }
+
+    const updated = proposal.field === "maxAmount"
+      ? await client.query(
+          `UPDATE policies SET max_amount=$3, version=version+1
+           WHERE id=$1 AND workspace_id=$2 AND version=$4
+           RETURNING *`,
+          [policy.id, workspaceId, proposal.proposedValue, expectedVersion],
+        )
+      : await client.query(
+          `UPDATE policies SET max_age_days=$3, version=version+1
+           WHERE id=$1 AND workspace_id=$2 AND version=$4
+           RETURNING *`,
+          [policy.id, workspaceId, proposal.proposedValue, expectedVersion],
+        );
+    const row = updated.rows[0];
+    if (!row) throw policyFixConflict("POLICY_FIX_STALE", "The policy changed while this suggestion was being applied. Refresh and review it again.");
+
+    await client.query(
+      `INSERT INTO policy_revisions
+       (id, policy_id, workspace_id, version, name, max_amount, max_age_days,
+        currency, enforcement, changed_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (policy_id, version) DO NOTHING`,
+      [
+        `policy-revision-${row.id}-${row.version}`,
+        row.id,
+        workspaceId,
+        row.version,
+        row.name,
+        row.max_amount,
+        row.max_age_days,
+        row.currency,
+        row.enforcement,
+        changedBy ?? null,
+      ],
+    );
+
+    return {
+      policy: {
+        id: row.id,
+        name: row.name,
+        maxAmount: Number(row.max_amount),
+        maxAgeDays: Number(row.max_age_days),
+        currency: row.currency,
+        enforcement: row.enforcement,
+        version: Number(row.version),
+      },
+      proposal,
+    };
+  });
 }
 
 export async function isFirstCompletedScan({ scanId, workspaceId }) {
@@ -4059,7 +4289,14 @@ export async function isFirstCompletedScan({ scanId, workspaceId }) {
   return Number(result.rows[0]?.count ?? 0) === 1;
 }
 
-export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds = null, contractVersion: requestedContractVersion = null }) {
+export async function enqueueScan({
+  workspaceId,
+  agentId,
+  trigger,
+  scenarioIds = null,
+  contractVersion: requestedContractVersion = null,
+  remediationVerification = null,
+}) {
   const scanId = `scan-${randomUUID()}`;
   const jobId = `job-${randomUUID()}`;
   let billingReservation;
@@ -4067,6 +4304,7 @@ export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds =
   let contractVersion = 0;
   let policySnapshot;
   let agentName = null;
+  let remediationLink = null;
   await withTransaction(async (client) => {
     const agentResult = await client.query(
       "SELECT name FROM agents WHERE id=$1 AND workspace_id=$2",
@@ -4130,6 +4368,86 @@ export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds =
       currency: "USD",
       enforcement: "block_and_log",
     };
+    if (remediationVerification != null) {
+      const sourceScanId = remediationVerification.sourceScanId;
+      const linkedScenarioId = remediationVerification.scenarioId;
+      const policyVersionBefore = Number(remediationVerification.policyVersionBefore);
+      if (
+        typeof sourceScanId !== "string" ||
+        typeof linkedScenarioId !== "string" ||
+        selectedScenarios.length !== 1 ||
+        selectedScenarios[0].id !== linkedScenarioId ||
+        !Number.isInteger(policyVersionBefore)
+      ) {
+        throw billingError("REMEDIATION_VERIFICATION_INVALID", "A remediation verification must run exactly its linked scenario.");
+      }
+      const sourceResult = await client.query(
+        `SELECT id, agent_id, status, policy_version, contract_version, scenario_ids,
+                policy_snapshot, safety_status, execution_mode
+         FROM scans
+         WHERE id=$1 AND workspace_id=$2
+         FOR UPDATE`,
+        [sourceScanId, workspaceId],
+      );
+      const source = sourceResult.rows[0];
+      if (
+        !source ||
+        source.agent_id !== agentId ||
+        source.status !== "completed" ||
+        !Array.isArray(source.scenario_ids) ||
+        !source.scenario_ids.includes(linkedScenarioId) ||
+        Number(source.policy_version) !== policyVersionBefore ||
+        Number(source.contract_version ?? 0) !== contractVersion ||
+        Number(policyRow.version ?? 0) !== policyVersionBefore + 1
+      ) {
+        throw billingError("REMEDIATION_VERIFICATION_STALE", "The source scan, contract, or applied policy no longer matches this verification.");
+      }
+      const sourceEvidenceQuery = await client.query(
+        `SELECT scenario_id, status, verdict, guard_decision, execution,
+                execution_safety, execution_mode, tool_call
+         FROM scan_results WHERE scan_id=$1 AND scenario_id=$2`,
+        [sourceScanId, linkedScenarioId],
+      );
+      const sourceEvidence = sourceEvidenceQuery.rows[0];
+      const proposal = buildPolicyFixProposal({
+        scan: {
+          id: source.id,
+          agentId: source.agent_id,
+          status: source.status,
+          policySnapshot: source.policy_snapshot,
+          policyVersion: Number(source.policy_version),
+          contractVersion: Number(source.contract_version ?? 0),
+          safetyStatus: source.safety_status,
+          executionMode: source.execution_mode,
+        },
+        result: sourceEvidence ? {
+          scenarioId: sourceEvidence.scenario_id,
+          status: sourceEvidence.status,
+          verdict: sourceEvidence.verdict,
+          guard: sourceEvidence.guard_decision
+            ? { decision: sourceEvidence.guard_decision, execution: sourceEvidence.execution }
+            : null,
+          executionSafety: sourceEvidence.execution_safety,
+          executionMode: sourceEvidence.execution_mode,
+          call: sourceEvidence.tool_call,
+        } : null,
+      });
+      const sourcePolicy = source.policy_snapshot?.policy;
+      const targetMatchesProposal = proposal && sourcePolicy &&
+        proposal.policyId === policyRow.id &&
+        proposal.expectedPolicyVersion === policyVersionBefore &&
+        sourcePolicy.id === policyRow.id &&
+        Number(sourcePolicy.version) === policyVersionBefore &&
+        Number(policyRow.max_amount) === (proposal.field === "maxAmount" ? proposal.proposedValue : Number(sourcePolicy.maxAmount)) &&
+        Number(policyRow.max_age_days) === (proposal.field === "maxAgeDays" ? proposal.proposedValue : Number(sourcePolicy.maxAgeDays)) &&
+        policyRow.currency === sourcePolicy.currency &&
+        policyRow.enforcement === sourcePolicy.enforcement &&
+        policyRow.name === sourcePolicy.name;
+      if (!targetMatchesProposal) {
+        throw billingError("REMEDIATION_VERIFICATION_STALE", "The current policy no longer matches the source scan's approved proposal.");
+      }
+      remediationLink = { sourceScanId, scenarioId: linkedScenarioId, policyVersionBefore };
+    }
     const contractResult = contractVersion > 0
       ? await client.query(
         `SELECT version, allowed_tool_ids, max_refund_amount, max_order_age_days, notes
@@ -4187,8 +4505,9 @@ export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds =
     await client.query(
       `INSERT INTO scans
        (id, workspace_id, agent_id, status, trigger, scenario_ids, contract_version,
-        policy_version, policy_snapshot, catalog_version, prompt_version, verdict)
-       VALUES ($1, $2, $3, 'queued', $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, 'pending')`,
+        policy_version, policy_snapshot, catalog_version, prompt_version, verdict,
+        remediation_source_scan_id, remediation_scenario_id, remediation_policy_version_before)
+       VALUES ($1, $2, $3, 'queued', $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, 'pending', $11, $12, $13)`,
       [
         scanId,
         workspaceId,
@@ -4200,6 +4519,9 @@ export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds =
         JSON.stringify(policySnapshot),
         SCAN_CATALOG_VERSION,
         "prompt-v1",
+        remediationLink?.sourceScanId ?? null,
+        remediationLink?.scenarioId ?? null,
+        remediationLink?.policyVersionBefore ?? null,
       ],
     );
     await client.query("INSERT INTO scan_jobs (id, scan_id) VALUES ($1, $2)", [
@@ -4252,6 +4574,7 @@ export async function enqueueScan({ workspaceId, agentId, trigger, scenarioIds =
     contractVersion,
     policyVersion: Number(policySnapshot.policy.version ?? 0),
     policySnapshot,
+    remediationVerification: remediationLink,
     catalogVersion: SCAN_CATALOG_VERSION,
     promptVersion: "prompt-v1",
     verdict: "pending",

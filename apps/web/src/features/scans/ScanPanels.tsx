@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../../shared/ui/Icon";
 import { RemediationCopilot } from "./RemediationCopilot";
-import type { AttackPathResult, Scan, ScanProgress, ScanRemediation, SecurityDemoProof, StoredRemediationCopilotGuidance } from "../../shared/types/api";
+import { PolicyFixWorkflow } from "./PolicyFixWorkflow";
+import type { AttackPathResult, PolicyFixProposal, Scan, ScanProgress, ScanRemediation, SecurityDemoProof, StoredRemediationCopilotGuidance, WorkspacePolicy } from "../../shared/types/api";
 
 type ScanResult = NonNullable<Scan["results"]>[number];
 
@@ -151,6 +152,16 @@ function RemediationCard({
   policyVersion,
   canGenerateAi,
   storedGuidance,
+  policyFix,
+  policy,
+  canManagePolicy,
+  scanning,
+  onPolicyUpdated,
+  onBusyChange,
+  onScanProgress,
+  onVerificationComplete,
+  sourceScan,
+  scanResult,
 }: {
   remediation: ScanRemediation;
   onRetest?: (scenarioId: string) => void;
@@ -159,6 +170,16 @@ function RemediationCard({
   policyVersion?: number;
   canGenerateAi: boolean;
   storedGuidance?: StoredRemediationCopilotGuidance;
+  policyFix?: PolicyFixProposal;
+  policy: WorkspacePolicy;
+  canManagePolicy: boolean;
+  scanning: boolean;
+  onPolicyUpdated: (policy: WorkspacePolicy) => void;
+  onBusyChange: (busy: boolean) => void;
+  onScanProgress: (scan: Scan) => void;
+  onVerificationComplete: () => void | Promise<void>;
+  sourceScan: Scan;
+  scanResult: ScanResult;
 }) {
   const isProtected = remediation.status === "protected";
   return (
@@ -176,6 +197,18 @@ function RemediationCard({
         {remediation.recommendations.map((item) => <article key={item.id}><div><b>{item.priority} · {item.title}</b><span>{item.action}</span></div><small><strong>Implementation:</strong> {item.implementation}<br /><strong>Verify:</strong> {item.verify}</small></article>)}
       </div>
       <div className="scan-remediation__acceptance"><span>Acceptance criteria</span><ul>{remediation.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul></div>
+      {policyFix ? <PolicyFixWorkflow
+        scan={sourceScan}
+        result={scanResult}
+        proposal={policyFix}
+        policy={policy}
+        canManage={canManagePolicy}
+        scanning={scanning}
+        onPolicyUpdated={onPolicyUpdated}
+        onBusyChange={onBusyChange}
+        onScanProgress={onScanProgress}
+        onVerificationComplete={onVerificationComplete}
+      /> : null}
       {remediation.status !== "protected" && canGenerateAi ? <RemediationCopilot scanId={scanId} scenarioId={remediation.scenarioId} verdict={verdict} policyVersion={policyVersion} storedGuidance={storedGuidance} onRetest={onRetest} /> : onRetest ? <button type="button" className="button button--subtle scan-remediation__retest" onClick={() => onRetest(remediation.retest.scenarioId)}><Icon name="activity" size={14} />{remediation.retest.label}</button> : null}
     </div>
   );
@@ -204,10 +237,24 @@ export function ScanEvidencePanel({
   scan,
   onClose,
   onRetest,
+  policy,
+  canManagePolicy,
+  scanning,
+  onPolicyUpdated,
+  onBusyChange,
+  onScanProgress,
+  onVerificationComplete,
 }: {
   scan: Scan;
   onClose: () => void;
   onRetest?: (scenarioId: string) => void;
+  policy: WorkspacePolicy;
+  canManagePolicy: boolean;
+  scanning: boolean;
+  onPolicyUpdated: (policy: WorkspacePolicy) => void;
+  onBusyChange: (busy: boolean) => void;
+  onScanProgress: (scan: Scan) => void;
+  onVerificationComplete: () => void | Promise<void>;
 }) {
   const results = scan.results ?? [];
   const testedScenarioCount = scan.scenarioCount ?? results.length;
@@ -389,7 +436,7 @@ export function ScanEvidencePanel({
                   <pre>{JSON.stringify(result.call.arguments, null, 2)}</pre>
                 </div>
               ) : null}
-              {result.remediation ? <RemediationCard remediation={result.remediation} onRetest={onRetest} scanId={scan.id} verdict={result.verdict} policyVersion={scan.policyVersion} canGenerateAi={scan.status === "completed"} storedGuidance={result.copilotGuidance} /> : null}
+              {result.remediation ? <RemediationCard remediation={result.remediation} onRetest={onRetest} scanId={scan.id} verdict={result.verdict} policyVersion={scan.policyVersion} canGenerateAi={scan.status === "completed"} storedGuidance={result.copilotGuidance} policyFix={result.policyFix} policy={policy} canManagePolicy={canManagePolicy} scanning={scanning} onPolicyUpdated={onPolicyUpdated} onBusyChange={onBusyChange} onScanProgress={onScanProgress} onVerificationComplete={onVerificationComplete} sourceScan={scan} scanResult={result} /> : null}
             </article>
           ))}
         </div>

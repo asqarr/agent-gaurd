@@ -258,6 +258,9 @@ function WorkspaceView({
   quickStartBusy,
   onNavigate,
   onPolicyUpdated,
+  onScanBusyChange,
+  onScanProgress,
+  onPolicyFixComplete,
   authUser,
   onUserUpdated,
   onLogout,
@@ -286,6 +289,9 @@ function WorkspaceView({
   quickStartBusy: boolean;
   onNavigate: (page: string) => void;
   onPolicyUpdated: (policy: Overview["policy"]) => void;
+  onScanBusyChange: (busy: boolean) => void;
+  onScanProgress: (scan: Scan) => void;
+  onPolicyFixComplete: () => void | Promise<void>;
   authUser: SessionUser;
   onUserUpdated: (user: SessionUser) => void;
   onLogout: () => void;
@@ -1122,6 +1128,17 @@ function WorkspaceView({
                 <ScanEvidencePanel
                   scan={selectedScan}
                   onRetest={(scenarioId) => onRetest(selectedScan.agentId, scenarioId)}
+                  policy={overview.policy}
+                  canManagePolicy={authUser.role === "owner" || authUser.role === "admin"}
+                  scanning={scanning}
+                  onPolicyUpdated={onPolicyUpdated}
+                  onBusyChange={onScanBusyChange}
+                  onScanProgress={onScanProgress}
+                  onVerificationComplete={async () => {
+                    await onPolicyFixComplete();
+                    const refreshed = await getScan(selectedScan.id).catch(() => null);
+                    if (refreshed) setSelectedScan(refreshed);
+                  }}
                   onClose={() => {
                     setSelectedScanId(null);
                     setSelectedScan(null);
@@ -1744,7 +1761,7 @@ function App() {
 
   function handlePolicyUpdated(nextPolicy: Overview["policy"]) {
     setOverview((current) => ({ ...current, policy: nextPolicy }));
-    setToast("Policy saved and now enforced");
+    setToast("Workspace policy updated");
   }
 
   const nav = [
@@ -2370,6 +2387,9 @@ function App() {
             quickStartBusy={quickStartBusy}
             onNavigate={setActive}
             onPolicyUpdated={handlePolicyUpdated}
+            onScanBusyChange={setScanning}
+            onScanProgress={setActiveScan}
+            onPolicyFixComplete={async () => { await refreshDashboard().catch(() => null); }}
             authUser={authUser ?? {
               id: "offline-preview",
               email: "preview@agentguard.local",

@@ -262,10 +262,183 @@ test("live API completes an authenticated scan and persists its evidence", async
   assert.equal(replayScan.status, "completed");
   assert.equal(replayScan.contractVersion, updatedContract.body.contract.version);
   assert.equal(replayScan.attackPaths.find((path) => path.id === "refund-guard-baseline").status, "protected");
+
+  // Exercise the owner-approved, persisted policy-fix loop using a deliberately
+  // misconfigured local simulator. This remains isolated to the integration
+  // workspace and never calls a customer endpoint or executes a real refund.
+  const policyForFix = (await api("/api/overview")).body.policy;
+  const permissivePolicy = await api(`/api/policies/${policyForFix.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...policyForFix, maxAmount: 150 }),
+  });
+  assert.equal(permissivePolicy.body.policy.maxAmount, 150);
+  const fixAgent = await api("/api/agents", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: "Policy fix verification simulator",
+      endpoint: null,
+      provider: "Integration simulator",
+      model: "integration-model",
+      toolIds: ["get_order", "issue_refund"],
+    }),
+  });
+  await query("UPDATE agents SET mode='needs_attention' WHERE id=$1 AND workspace_id=$2", [fixAgent.body.agent.id, workspaceId]);
+  const policyFixBillingBefore = (await api("/api/billing")).body.usage.scanCreditsUsed;
+
+  const vulnerableQueued = await api("/api/scans", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agentId: fixAgent.body.agent.id, trigger: "Policy fix integration", scenarioIds: ["amount_limit"] }),
+  });
+  let vulnerableScan = vulnerableQueued.body.scan;
+  for (let attempt = 0; attempt < 40 && ["queued", "running"].includes(vulnerableScan.status); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    vulnerableScan = (await api(`/api/scans/${vulnerableScan.id}`)).body.scan;
+  }
+  assert.equal(vulnerableScan.status, "completed");
+  const vulnerableResult = vulnerableScan.results.find((result) => result.scenarioId === "amount_limit");
+  assert.equal(vulnerableResult.verdict, "VULNERABLE");
+  assert.equal(vulnerableResult.guard.decision, "ALLOW");
+  assert.equal(vulnerableResult.executionSafety, "safe");
+  assert.equal(vulnerableResult.policyFix.proposedValue, 99.99);
+  assert.equal(vulnerableResult.policyFix.expectedPolicyVersion, permissivePolicy.body.policy.version);
+  const billingAfterVulnerableScan = (await api("/api/billing")).body.usage.scanCreditsUsed;
+  assert.equal(billingAfterVulnerableScan, policyFixBillingBefore + 2, "the source scan should charge the selected scenario's credits");
+
+  const appliedFix = await api(`/api/scans/${vulnerableScan.id}/policy-fixes/amount_limit/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expectedPolicyVersion: permissivePolicy.body.policy.version }),
+  });
+  assert.equal(appliedFix.body.policy.maxAmount, 99.99);
+  assert.equal(appliedFix.body.policy.version, permissivePolicy.body.policy.version + 1);
+  const duplicateApply = await fetch(`${baseUrl}/api/scans/${vulnerableScan.id}/policy-fixes/amount_limit/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookie },
+    body: JSON.stringify({ expectedPolicyVersion: permissivePolicy.body.policy.version }),
+  });
+  assert.equal(duplicateApply.status, 409, "stale approvals must not apply twice");
+
+  const verificationQueued = await api("/api/scans", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      agentId: fixAgent.body.agent.id,
+      trigger: "Policy fix verification",
+      scenarioIds: ["amount_limit"],
+      remediationVerification: {
+        sourceScanId: vulnerableScan.id,
+        scenarioId: "amount_limit",
+        policyVersionBefore: permissivePolicy.body.policy.version,
+      },
+    }),
+  });
+  let policyVerification = verificationQueued.body.scan;
+  for (let attempt = 0; attempt < 40 && ["queued", "running"].includes(policyVerification.status); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    policyVerification = (await api(`/api/scans/${policyVerification.id}`)).body.scan;
+  }
+  assert.equal(policyVerification.status, "completed");
+  const verifiedResult = policyVerification.results.find((result) => result.scenarioId === "amount_limit");
+  assert.equal(verifiedResult.verdict, "PROTECTED");
+  assert.equal(verifiedResult.executionSafety, "safe");
+  assert.deepEqual(verifiedResult.guard, { decision: "BLOCK", execution: "NOT_EXECUTED" });
+  assert.deepEqual(policyVerification.remediationVerification, {
+    sourceScanId: vulnerableScan.id,
+    scenarioId: "amount_limit",
+    policyVersionBefore: permissivePolicy.body.policy.version,
+  });
+  const persistedSource = (await api(`/api/scans/${vulnerableScan.id}`)).body.scan;
+  assert.equal(persistedSource.verificationRuns[0].scanId, policyVerification.id);
+  assert.equal(persistedSource.verificationRuns[0].scenarioVerdict, "PROTECTED");
+  assert.equal(persistedSource.verificationRuns[0].policyVersionAfter, appliedFix.body.policy.version);
+  const billingAfterVerification = (await api("/api/billing")).body.usage.scanCreditsUsed;
+  assert.equal(billingAfterVerification, billingAfterVulnerableScan + 2, "verification should be metered as its own exact-scenario scan");
+  const policyRevision = await query(
+    "SELECT version, max_amount FROM policy_revisions WHERE policy_id=$1 AND version=$2",
+    [appliedFix.body.policy.id, appliedFix.body.policy.version],
+  );
+  assert.equal(policyRevision.rowCount, 1, "approved fixes should create a durable policy revision");
+  assert.equal(Number(policyRevision.rows[0].max_amount), 99.99);
+
+  // Exercise the second supported policy field end to end as well: trusted
+  // order age must trigger a max-age proposal, approval and exact retest.
+  const agePolicy = await api(`/api/policies/${appliedFix.body.policy.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...appliedFix.body.policy, maxAgeDays: 30 }),
+  });
+  const ageQueued = await api("/api/scans", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agentId: fixAgent.body.agent.id, trigger: "Age policy fix integration", scenarioIds: ["expired_order"] }),
+  });
+  let ageScan = ageQueued.body.scan;
+  for (let attempt = 0; attempt < 40 && ["queued", "running"].includes(ageScan.status); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    ageScan = (await api(`/api/scans/${ageScan.id}`)).body.scan;
+  }
+  assert.equal(ageScan.status, "completed");
+  const ageResult = ageScan.results.find((result) => result.scenarioId === "expired_order");
+  assert.equal(ageResult.verdict, "VULNERABLE");
+  assert.equal(ageResult.guard.decision, "ALLOW");
+  assert.equal(ageResult.policyFix.field, "maxAgeDays");
+  assert.equal(ageResult.policyFix.proposedValue, 19);
+  const appliedAgeFix = await api(`/api/scans/${ageScan.id}/policy-fixes/expired_order/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expectedPolicyVersion: agePolicy.body.policy.version }),
+  });
+  assert.equal(appliedAgeFix.body.policy.maxAgeDays, 19);
+  assert.equal(appliedAgeFix.body.policy.version, agePolicy.body.policy.version + 1);
+  const ageVerificationQueued = await api("/api/scans", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      agentId: fixAgent.body.agent.id,
+      trigger: "Age policy fix verification",
+      scenarioIds: ["expired_order"],
+      remediationVerification: {
+        sourceScanId: ageScan.id,
+        scenarioId: "expired_order",
+        policyVersionBefore: agePolicy.body.policy.version,
+      },
+    }),
+  });
+  let ageVerification = ageVerificationQueued.body.scan;
+  for (let attempt = 0; attempt < 40 && ["queued", "running"].includes(ageVerification.status); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    ageVerification = (await api(`/api/scans/${ageVerification.id}`)).body.scan;
+  }
+  assert.equal(ageVerification.status, "completed");
+  const verifiedAgeResult = ageVerification.results.find((result) => result.scenarioId === "expired_order");
+  assert.equal(verifiedAgeResult.verdict, "PROTECTED");
+  assert.deepEqual(verifiedAgeResult.guard, { decision: "BLOCK", execution: "NOT_EXECUTED" });
+  const persistedAgeSource = (await api(`/api/scans/${ageScan.id}`)).body.scan;
+  assert.equal(persistedAgeSource.verificationRuns[0].scanId, ageVerification.id);
+  const ageRevision = await query(
+    "SELECT version, max_age_days FROM policy_revisions WHERE policy_id=$1 AND version=$2",
+    [appliedAgeFix.body.policy.id, appliedAgeFix.body.policy.version],
+  );
+  assert.equal(ageRevision.rowCount, 1);
+  assert.equal(Number(ageRevision.rows[0].max_age_days), 19);
+
   const audit = await api("/api/audit");
   assert.ok(audit.body.events.some((event) => event.action === "auth.login"));
   assert.ok(audit.body.events.some((event) => event.action === "scan.created"));
   assert.ok(audit.body.events.some((event) => event.action === "policy.updated"));
+  assert.ok(audit.body.events.some((event) => event.action === "scan.policy_fix.applied"));
+
+  // Retention deletes source evidence; the dependent verification must not
+  // become an orphan or prevent the source scan from being removed.
+  await query("DELETE FROM scans WHERE id=$1 AND workspace_id=$2", [vulnerableScan.id, workspaceId]);
+  const orphanedVerification = await query("SELECT 1 FROM scans WHERE id=$1 AND workspace_id=$2", [policyVerification.id, workspaceId]);
+  assert.equal(orphanedVerification.rowCount, 0);
+  await query("DELETE FROM scans WHERE id=$1 AND workspace_id=$2", [ageScan.id, workspaceId]);
+  const orphanedAgeVerification = await query("SELECT 1 FROM scans WHERE id=$1 AND workspace_id=$2", [ageVerification.id, workspaceId]);
+  assert.equal(orphanedAgeVerification.rowCount, 0);
 });
 
 test("live API rejects a private agent endpoint", async () => {

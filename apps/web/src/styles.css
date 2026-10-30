@@ -4414,3 +4414,42 @@ select {
   .activity-detail-backdrop, .activity-detail { animation: none; }
   .activity-detail__spinner { animation: none; }
 }
+
+.policy-fix-workflow { padding: 13px; margin-top: 12px; border: 1px solid #3c6c69; border-radius: 7px; background: linear-gradient(145deg, rgba(12, 39, 46, .8), rgba(7, 20, 32, .92)); }
+.policy-fix-workflow__heading { display: flex; align-items: center; gap: 9px; }
+.policy-fix-workflow__heading > div:nth-child(2) { display: grid; flex: 1; gap: 4px; min-width: 0; }
+.policy-fix-workflow__heading h5 { margin: 0; color: #d9eeee; font-size: 11px; line-height: 1.4; }
+.policy-fix-workflow__mark { display: grid; flex: 0 0 30px; place-items: center; width: 30px; height: 30px; border: 1px solid #337d78; border-radius: 7px; color: #8bf0de; background: rgba(47, 131, 121, .15); }
+.policy-fix-workflow__scope { flex: 0 0 auto; padding: 5px 6px; border: 1px solid #355663; border-radius: 4px; color: #8cbcc3; font: 7px "DM Mono", monospace; letter-spacing: .04em; }
+.policy-fix-workflow__rationale { margin: 10px 0 0; color: #abc4c9; font-size: 9px; line-height: 1.5; }
+.policy-fix-workflow__change { display: grid; grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr); align-items: center; gap: 7px; margin-top: 10px; }
+.policy-fix-workflow__change > div { display: grid; gap: 5px; min-width: 0; padding: 8px; border: 1px solid #294653; border-radius: 5px; background: rgba(5, 18, 29, .68); }
+.policy-fix-workflow__change > svg { justify-self: center; color: #6fd4c1; }
+.policy-fix-workflow__change span { color: #7996a0; font: 7px "DM Mono", monospace; text-transform: uppercase; }
+.policy-fix-workflow__change strong { overflow: hidden; color: #d3ece7; font: 11px "DM Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
+.policy-fix-workflow__impact { display: flex; align-items: flex-start; gap: 6px; padding: 8px; margin: 9px 0 0; border: 1px solid rgba(139, 112, 61, .45); border-radius: 5px; color: #c8b77d; background: rgba(76, 58, 22, .17); font-size: 8px; line-height: 1.5; }
+.policy-fix-workflow__impact svg { flex: 0 0 auto; margin-top: 1px; }
+.policy-fix-workflow__proof { margin: 8px 0 0; color: #79939d; font-size: 8px; line-height: 1.5; }
+.policy-fix-workflow__proof code { color: #a6cfca; font: 8px "DM Mono", monospace; }
+.policy-fix-workflow__result { display: grid; gap: 5px; padding: 9px; margin-top: 9px; border: 1px solid #46505c; border-radius: 5px; background: rgba(10, 22, 34, .75); }
+.policy-fix-workflow__result strong { color: #cbdde0; font-size: 9px; }
+.policy-fix-workflow__result span, .policy-fix-workflow__result small { color: #8ca4ad; font: 8px/1.5 "DM Mono", monospace; }
+.policy-fix-workflow__result--running { border-color: #315d67; }
+.policy-fix-workflow__result--running strong { color: #91dce0; }
+.policy-fix-workflow__result--verified { border-color: #34776d; background: rgba(13, 52, 53, .34); }
+.policy-fix-workflow__result--verified strong { color: #8ee2c5; }
+.policy-fix-workflow__result--inconclusive { border-color: #796540; background: rgba(76, 58, 22, .18); }
+.policy-fix-workflow__result--inconclusive strong { color: #e1c580; }
+.policy-fix-workflow__result--failed { border-color: #754a50; background: rgba(75, 31, 39, .2); }
+.policy-fix-workflow__result--failed strong { color: #e6aaa0; }
+.policy-fix-workflow__notice, .policy-fix-workflow__permission, .policy-fix-workflow__stale { margin: 8px 0 0; color: #839ca5; font-size: 8px; line-height: 1.5; }
+.policy-fix-workflow__error { padding: 8px; margin: 8px 0 0; border: 1px solid #70464b; border-radius: 4px; color: #efaaa1; background: rgba(88, 35, 42, .22); font-size: 8px; line-height: 1.45; }
+.policy-fix-workflow__stale { color: #d3b875; }
+.policy-fix-workflow__actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.policy-fix-workflow__actions .button { min-height: 30px; padding: 7px 9px; font-size: 8px; }
+@media (max-width: 680px) {
+  .policy-fix-workflow__heading { align-items: flex-start; }
+  .policy-fix-workflow__scope { margin-left: auto; }
+  .policy-fix-workflow__actions { align-items: stretch; }
+  .policy-fix-workflow__actions .button { flex: 1; justify-content: center; }
+}

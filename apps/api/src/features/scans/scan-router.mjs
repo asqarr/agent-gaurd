@@ -97,7 +97,7 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
 
   router.post("/scans", scanRateLimit, async (req, res, next) => {
     try {
-      const { agentId, trigger = "Manual", scenarioIds = null } = req.body ?? {};
+      const { agentId, trigger = "Manual", scenarioIds = null, remediationVerification = null } = req.body ?? {};
       const agent = await repository.getAgent(agentId ?? "storefront-copilot", req.auth.workspaceId);
       if (!agent) return res.status(404).json({ error: "Agent not found." });
       if (agent.status === "quarantined") return res.status(409).json({ error: "Agent is quarantined. Restore it before starting a new scan." });
@@ -112,6 +112,7 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
         agentId: agent.id,
         trigger,
         scenarioIds,
+        remediationVerification,
       });
       await recordAudit(req, {
         action: "scan.created",
@@ -123,6 +124,9 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
     } catch (error) {
       if (["SCAN_QUOTA_EXCEEDED", "SUBSCRIPTION_REQUIRED"].includes(error?.code)) {
         return planLimitResponse(req, res, error);
+      }
+      if (["REMEDIATION_VERIFICATION_INVALID", "REMEDIATION_VERIFICATION_STALE"].includes(error?.code)) {
+        return res.status(409).json({ error: error.message, code: error.code });
       }
       next(error);
     }
@@ -137,6 +141,49 @@ export function createScanRouter({ scanRateLimit, copilotRateLimit, recordAudit 
         policy: scan.policySnapshot?.effective ?? (await repository.getPolicy(req.auth.workspaceId)) ?? policy,
       });
     } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/scans/:scanId/policy-fixes/:scenarioId/apply", async (req, res, next) => {
+    try {
+      if (!["owner", "admin"].includes(req.auth.role)) {
+        return res.status(403).json({ error: "Only workspace owners and admins can apply policy changes." });
+      }
+      const expectedPolicyVersion = req.body?.expectedPolicyVersion;
+      if (!Number.isInteger(expectedPolicyVersion) || expectedPolicyVersion < 1) {
+        return res.status(400).json({ error: "A valid policy version from the source scan is required." });
+      }
+      const applied = await repository.applyPolicyFixFromScan({
+        workspaceId: req.auth.workspaceId,
+        scanId: req.params.scanId,
+        scenarioId: req.params.scenarioId,
+        expectedPolicyVersion,
+        changedBy: req.auth.userId,
+      });
+      await recordAudit(req, {
+        action: "scan.policy_fix.applied",
+        resourceType: "scan",
+        resourceId: req.params.scanId,
+        metadata: {
+          scenarioId: applied.proposal.scenarioId,
+          policyId: applied.policy.id,
+          policyField: applied.proposal.field,
+          previousValue: applied.proposal.currentValue,
+          newValue: applied.proposal.proposedValue,
+          previousVersion: applied.proposal.expectedPolicyVersion,
+          newVersion: applied.policy.version,
+        },
+      });
+      res.setHeader("Cache-Control", "no-store");
+      res.json(applied);
+    } catch (error) {
+      if (error?.code === "SCAN_NOT_FOUND" || error?.code === "SCENARIO_NOT_FOUND") {
+        return res.status(404).json({ error: error.message, code: error.code });
+      }
+      if (["POLICY_FIX_NOT_APPLICABLE", "POLICY_FIX_STALE"].includes(error?.code)) {
+        return res.status(409).json({ error: error.message, code: error.code });
+      }
       next(error);
     }
   });

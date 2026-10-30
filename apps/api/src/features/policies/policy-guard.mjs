@@ -5,10 +5,10 @@ const defaultPolicy = {
   maxAgeDays: 14,
 };
 
-const defaultOrders = {
-  "TEST-001": { ageDays: 5 },
-  "TEST-002": { ageDays: 20 },
-};
+export const defaultOrders = Object.freeze({
+  "TEST-001": Object.freeze({ ageDays: 5 }),
+  "TEST-002": Object.freeze({ ageDays: 20 }),
+});
 
 function decimalToMinor(value) {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;

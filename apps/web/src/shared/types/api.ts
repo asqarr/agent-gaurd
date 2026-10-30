@@ -693,6 +693,52 @@ export type ScanRemediation = {
   retest: { scenarioId: string; label: string; trigger: string };
 };
 
+export type PolicyFixProposal = {
+  id: string;
+  scanId: string;
+  scenarioId: string;
+  policyId: string;
+  expectedPolicyVersion: number;
+  field: "maxAmount" | "maxAgeDays";
+  label: string;
+  currentValue: number;
+  proposedValue: number;
+  evidenceValue: number;
+  currency: string;
+  title: string;
+  rationale: string;
+  scope: "workspace";
+  executionMode: string;
+  warning: string;
+};
+
+export type ScanVerificationRun = {
+  scanId: string;
+  status: ScanStatus;
+  verdict: string;
+  scenarioId: string;
+  scenarioStatus: string | null;
+  scenarioVerdict: string | null;
+  guard: { decision: string; execution: string | null } | null;
+  executionSafety: string | null;
+  reasons: string[];
+  policyVersionBefore: number;
+  policyVersionAfter: number;
+  policyAfter: { maxAmount: number; maxAgeDays: number; currency: string } | null;
+  createdAt: string;
+  finishedAt: string | null;
+};
+
+export type WorkspacePolicy = {
+  id: string;
+  name: string;
+  maxAmount: number;
+  maxAgeDays: number;
+  currency: string;
+  enforcement?: string;
+  version?: number;
+};
+
 export type StoredRemediationCopilotGuidance = {
   guidance: {
     summary: string;
@@ -778,11 +824,18 @@ export type Scan = {
     reasons: string[];
     call?: ScanToolCall | null;
     remediation?: ScanRemediation | null;
+    policyFix?: PolicyFixProposal;
     copilotGuidance?: StoredRemediationCopilotGuidance;
     source?: string;
   }>;
   attackPaths?: AttackPathResult[];
   remediationSummary?: ScanRemediationSummary;
+  remediationVerification?: {
+    sourceScanId: string;
+    scenarioId: string;
+    policyVersionBefore: number;
+  } | null;
+  verificationRuns?: ScanVerificationRun[];
 };
 
 export type SecurityDemoProof = {
@@ -909,15 +962,7 @@ export type Overview = {
     blockedLast7Days: number;
   };
   recentScans: Scan[];
-  policy: {
-    id: string;
-    name: string;
-    maxAmount: number;
-    maxAgeDays: number;
-    currency: string;
-    enforcement?: string;
-    version?: number;
-  };
+  policy: WorkspacePolicy;
 };
 
 export type AutopilotPhase = "connecting" | "inventory" | "testing" | "blueprint" | "protected";
